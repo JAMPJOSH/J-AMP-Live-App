@@ -4842,9 +4842,9 @@ const JOB_FIELDS = [
   {key:'jobName', label:'Job', type:'text', required:true},
   {key:'builder', label:'Builder', type:'text'},
   {key:'state', label:'State', type:'text'},
-  {key:'contractValue', label:'Contract Value ($)', type:'number'},
+  {key:'contractValue', label:'Contract Value ($)', type:'number', step:'0.01'},
   {key:'probBand', label:'Confidence', type:'select', options:['Likely (>90%)','Possible (50-89%)','Unlikely (<50%)']},
-  {key:'fy26Total', label:'FY Total Forecast ($)', type:'number'},
+  {key:'fy26Total', label:'FY Total Forecast ($)', type:'number', step:'0.01'},
   {key:'jobType', label:'Job Type', type:'select', options:['Residential','Commercial']},
 ];
 
