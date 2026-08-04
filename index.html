@@ -171,12 +171,6 @@
   tbody tr.flare-overdue{ box-shadow:inset 3px 0 0 var(--bad); }
   tr.flare-invoiced{ box-shadow:inset 3px 0 0 var(--good); }
   tr.flare-not-invoiced{ box-shadow:inset 3px 0 0 var(--warn); }
-  .invoice-toggle{
-    font-family:var(--font-mono); font-size:.64rem; letter-spacing:.05em; text-transform:uppercase;
-    padding:4px 10px; border-radius:20px; border:1px solid; cursor:pointer; white-space:nowrap;
-  }
-  .invoice-toggle.yes{ color:var(--good); border-color:var(--good); background:rgba(57,217,138,.1); }
-  .invoice-toggle.no{ color:var(--warn); border-color:var(--warn); background:rgba(255,176,32,.1); }
   tbody tr.flare-soon{ box-shadow:inset 3px 0 0 var(--warn); }
   td{ padding:9px 10px; vertical-align:top; white-space:nowrap; }
   td.wrap{ white-space:normal; min-width:220px; }
@@ -4028,17 +4022,30 @@ function buildFreshJob(raw, i){
   ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].forEach(mk => { rec['fy27'+mk] = 0; });
   rec.variations = [];
   rec.links = [];
-  rec.monthInvoiced = {};
+  rec.monthInvoicedAmount = {};
   rec.complete = false;
   return rec;
 }
 
 const AUTO_INVOICED_MONTHS_2026 = ['jan','feb','mar','apr','may','jun'];
 function applyInvoiceDefaults(job){
-  if(!job.monthInvoiced) job.monthInvoiced = {};
-  AUTO_INVOICED_MONTHS_2026.forEach(mk => {
-    if(job.monthInvoiced[mk] === undefined) job.monthInvoiced[mk] = true;
-  });
+  if(!job.monthInvoicedAmount) job.monthInvoicedAmount = {};
+  FORECAST_YEARS.forEach(year => FORECAST_MONTH_KEYS.forEach(mk => {
+    const field = commercialFieldFor(year, mk);
+    if(job.monthInvoicedAmount[field] === undefined){
+      // Migrate legacy all-or-nothing flag to a partial-invoicing amount (once only).
+      const val = job[field] || 0;
+      const legacy = job.monthInvoiced ? job.monthInvoiced[field] : undefined;
+      if(legacy !== undefined){
+        job.monthInvoicedAmount[field] = legacy ? val : 0;
+      } else if(year === 2026 && AUTO_INVOICED_MONTHS_2026.includes(mk)){
+        job.monthInvoicedAmount[field] = val;
+      } else {
+        job.monthInvoicedAmount[field] = 0;
+      }
+    }
+  }));
+  delete job.monthInvoiced;
   (job.variations||[]).forEach(v => {
     if(v.invoicedAmount === undefined){
       // Migrate legacy all-or-nothing flag to a partial-invoicing amount (once only).
@@ -4211,7 +4218,7 @@ function computeInvoiceSummary(){
       const field = commercialFieldFor(year, mk);
       const val = j[field] || 0;
       total += val;
-      if(j.monthInvoiced && j.monthInvoiced[field]) invoiced += val;
+      invoiced += Math.min((j.monthInvoicedAmount && j.monthInvoicedAmount[field]) || 0, val);
     }));
     (j.variations||[]).forEach(v => {
       if(v.status === 'Approved'){
@@ -4426,7 +4433,7 @@ function computeJobInvoiceProgress(j){
   FORECAST_YEARS.forEach(year => FORECAST_MONTH_KEYS.forEach(mk => {
     const field = commercialFieldFor(year, mk);
     const val = j[field] || 0;
-    if(j.monthInvoiced && j.monthInvoiced[field]) invoiced += val;
+    invoiced += Math.min((j.monthInvoicedAmount && j.monthInvoicedAmount[field]) || 0, val);
   }));
   const remaining = (j.contractValue || 0) - invoiced;
   return {invoiced, remaining};
@@ -4439,16 +4446,8 @@ function invoiceProgressHtml(j){
     <div class="job-meta" style="color:${remainingColor};">Remaining ${fmtMoney(p.remaining)}</div>`;
 }
 
-function invoiceToggleHtml(cls, dataAttrs, isInvoiced){
-  if(READ_ONLY){
-    return `<span class="invoice-toggle ${isInvoiced?'yes':'no'}" style="cursor:default;">${isInvoiced ? 'Invoiced' : 'Not invoiced'}</span>`;
-  }
-  return `<button type="button" class="invoice-toggle ${isInvoiced?'yes':'no'} ${cls}" ${dataAttrs}>${isInvoiced ? 'Invoiced' : 'Not invoiced'}</button>`;
-}
-
-function variationInvoiceCellHtml(j, v){
-  const amt = v.amount||0;
-  const inv = Math.min(v.invoicedAmount||0, amt);
+function invoiceAmountCellHtml(inputClass, dataAttrs, inv, amt){
+  inv = Math.min(inv||0, amt||0);
   const cls = amt>0 && inv>=amt ? 'won' : (inv>0 ? 'partial' : 'pending');
   const label = amt>0 && inv>=amt ? 'Fully Invoiced' : (inv>0 ? 'Partially Invoiced' : 'Not Invoiced');
   const pill = `<span class="pill ${cls}"><span class="pill-dot"></span>${label}</span>`;
@@ -4456,7 +4455,7 @@ function variationInvoiceCellHtml(j, v){
     return `<div>${pill}</div><div class="job-meta">${fmtMoneyFull(inv)} of ${fmtMoneyFull(amt)}</div>`;
   }
   return `<div style="display:flex;flex-direction:column;gap:4px;">
-    <input type="number" step="0.01" min="0" max="${amt}" class="var-invoiced-amount" data-id="${j.id}" data-varid="${v.id}" value="${inv}" style="width:110px;text-align:right;" title="Amount of this variation invoiced so far"/>
+    <input type="number" step="0.01" min="0" max="${amt}" class="${inputClass}" ${dataAttrs} value="${inv}" style="width:110px;text-align:right;" title="Amount invoiced so far"/>
     <div class="job-meta">${pill} of ${fmtMoneyFull(amt)}</div>
   </div>`;
 }
@@ -4475,7 +4474,7 @@ function variationRowHtml(j, v){
     <td class="num">${READ_ONLY ? fmtMoneyFull(v.amount) : `<input type="number" step="0.01" class="var-amount" data-id="${j.id}" data-varid="${v.id}" value="${v.amount||0}" style="width:100px;text-align:right;"/>`}</td>
     <td>${statusCell}</td>
     <td>${monthCell}</td>
-    <td>${variationInvoiceCellHtml(j, v)}</td>
+    <td>${invoiceAmountCellHtml('var-invoiced-amount', `data-id="${j.id}" data-varid="${v.id}"`, inv, amt)}</td>
     <td>${removeCell}</td>
   </tr>`;
 }
@@ -4517,14 +4516,14 @@ function variationsSectionHtml(j){
 }
 
 function monthlyGridHtml(j){
-  const invoicedMap = j.monthInvoiced || {};
+  const invoicedMap = j.monthInvoicedAmount || {};
   const rows = FORECAST_YEARS.map(year => FORECAST_MONTH_KEYS.map((mk,i) => {
     const field = commercialFieldFor(year, mk);
     const val = j[field] || 0;
-    const isInvoiced = !!invoicedMap[field];
-    const rowClass = isInvoiced ? 'flare-invoiced' : 'flare-not-invoiced';
+    const inv = Math.min(invoicedMap[field]||0, val);
+    const rowClass = val>0 && inv>=val ? 'flare-invoiced' : (inv>0 ? 'flare-partial-invoiced' : 'flare-not-invoiced');
     const valueCell = READ_ONLY ? fmtMoneyFull(val) : `<input type="number" step="0.01" class="claim-input" data-id="${j.id}" data-field="${field}" value="${val}" style="width:110px;text-align:right;"/>`;
-    return `<tr class="${rowClass}"><td>${FORECAST_MONTH_LABELS[i]} ${year}</td><td class="num">${valueCell}</td><td>${invoiceToggleHtml('month-invoiced-toggle', `data-id="${j.id}" data-field="${field}"`, isInvoiced)}</td></tr>`;
+    return `<tr class="${rowClass}"><td>${FORECAST_MONTH_LABELS[i]} ${year}</td><td class="num">${valueCell}</td><td>${invoiceAmountCellHtml('month-invoiced-amount', `data-id="${j.id}" data-field="${field}"`, inv, val)}</td></tr>`;
   }).join('')).join('');
   return `<div class="job-meta" style="margin-bottom:8px;">MONTHLY FORECAST &middot; as imported from the spreadsheet<span class="edit-only"> &mdash; edit any month directly to shift it</span></div>
     <table style="max-width:380px;"><thead><tr><th>Month</th><th style="text-align:right">$</th><th>Invoiced</th></tr></thead><tbody>${rows}</tbody></table>`;
@@ -4985,17 +4984,6 @@ document.getElementById('jobBody').addEventListener('click', e => {
     }
     return;
   }
-  const monthInvoicedBtn = e.target.closest('.month-invoiced-toggle');
-  if(monthInvoicedBtn){
-    const j = jobs.find(x => x.id === monthInvoicedBtn.dataset.id);
-    if(j){
-      if(!j.monthInvoiced) j.monthInvoiced = {};
-      const field = monthInvoicedBtn.dataset.field;
-      j.monthInvoiced[field] = !j.monthInvoiced[field];
-      saveState(); renderAll();
-    }
-    return;
-  }
   const completeBtn = e.target.closest('.complete-toggle-btn');
   if(completeBtn){
     const j = jobs.find(x => x.id === completeBtn.dataset.id);
@@ -5010,6 +4998,12 @@ document.getElementById('jobBody').addEventListener('change', e => {
   if(!j) return;
   if(e.target.classList.contains('claim-input')){
     j[e.target.dataset.field] = parseFloat(e.target.value) || 0;
+    saveState(); renderAll();
+  } else if(e.target.classList.contains('month-invoiced-amount')){
+    if(!j.monthInvoicedAmount) j.monthInvoicedAmount = {};
+    const field = e.target.dataset.field;
+    const amt = j[field] || 0;
+    j.monthInvoicedAmount[field] = Math.max(0, Math.min(parseFloat(e.target.value) || 0, amt));
     saveState(); renderAll();
   } else if(e.target.classList.contains('var-desc') || e.target.classList.contains('var-amount') || e.target.classList.contains('var-status') || e.target.classList.contains('var-month')){
     const v = (j.variations||[]).find(x => x.id === e.target.dataset.varid);
@@ -5142,14 +5136,11 @@ function unionById(localList, importedList){
   (localList||[]).forEach(item => map.set(item.id, item)); // local wins on same-id conflict
   return Array.from(map.values());
 }
-function orMergeInvoiced(localDict, importedDict){
+function maxMergeInvoiced(localDict, importedDict){
   localDict = localDict || {}; importedDict = importedDict || {};
   const keys = new Set([...Object.keys(localDict), ...Object.keys(importedDict)]);
   const merged = {};
-  keys.forEach(k => {
-    if(localDict[k] === true || importedDict[k] === true) merged[k] = true;
-    else merged[k] = localDict[k] !== undefined ? localDict[k] : importedDict[k];
-  });
+  keys.forEach(k => { merged[k] = Math.max(localDict[k]||0, importedDict[k]||0); });
   return merged;
 }
 function mergePeerFields(local, imported, fields){
@@ -5173,7 +5164,7 @@ function mergeJobPeer(local, imported){
   const merged = mergePeerFields(local, imported, JOB_MERGE_FIELDS);
   merged.variations = unionById(local.variations, imported.variations);
   merged.links = unionById(local.links, imported.links);
-  merged.monthInvoiced = orMergeInvoiced(local.monthInvoiced, imported.monthInvoiced);
+  merged.monthInvoicedAmount = maxMergeInvoiced(local.monthInvoicedAmount, imported.monthInvoicedAmount);
   merged.jobType = local.jobType;
   merged.complete = local.complete;
   merged.stages = local.stages;
