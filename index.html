@@ -347,6 +347,8 @@
             <th data-sort="city">City</th>
             <th data-sort="dateReceived">Received</th>
             <th data-sort="dueDate">Due</th>
+            <th data-sort="dateSubmitted">Submitted</th>
+            <th data-sort="chaseDate">Chase Up</th>
             <th data-sort="tenderSum" style="text-align:right">Tender $</th>
             <th data-sort="profitPct" style="text-align:right">Profit</th>
             <th data-sort="status">Status</th>
@@ -4022,42 +4024,54 @@ function buildFreshJob(raw, i){
   ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].forEach(mk => { rec['fy27'+mk] = 0; });
   rec.variations = [];
   rec.links = [];
-  rec.monthInvoicedAmount = {};
+  rec.monthInvoiceLog = {};
   rec.complete = false;
   return rec;
 }
 
 const AUTO_INVOICED_MONTHS_2026 = ['jan','feb','mar','apr','may','jun'];
+function sumLog(log){ return (log||[]).reduce((s,e) => s + (e.amount||0), 0); }
+function legacyAmountToLog(amt){ return amt > 0 ? [{amount: amt, timestamp: null}] : []; }
+
 function applyInvoiceDefaults(job){
-  if(!job.monthInvoicedAmount) job.monthInvoicedAmount = {};
+  if(!job.monthInvoiceLog) job.monthInvoiceLog = {};
   FORECAST_YEARS.forEach(year => FORECAST_MONTH_KEYS.forEach(mk => {
     const field = commercialFieldFor(year, mk);
-    if(job.monthInvoicedAmount[field] === undefined){
-      // Migrate legacy all-or-nothing flag to a partial-invoicing amount (once only).
+    if(job.monthInvoiceLog[field] === undefined){
+      // Migrate whichever legacy shape exists (boolean, then flat amount) into a dated log, once only.
       const val = job[field] || 0;
-      const legacy = job.monthInvoiced ? job.monthInvoiced[field] : undefined;
-      if(legacy !== undefined){
-        job.monthInvoicedAmount[field] = legacy ? val : 0;
+      let amt;
+      if(job.monthInvoicedAmount && job.monthInvoicedAmount[field] !== undefined){
+        amt = job.monthInvoicedAmount[field];
+      } else if(job.monthInvoiced && job.monthInvoiced[field] !== undefined){
+        amt = job.monthInvoiced[field] ? val : 0;
       } else if(year === 2026 && AUTO_INVOICED_MONTHS_2026.includes(mk)){
-        job.monthInvoicedAmount[field] = val;
+        amt = val;
       } else {
-        job.monthInvoicedAmount[field] = 0;
+        amt = 0;
       }
+      job.monthInvoiceLog[field] = legacyAmountToLog(amt);
     }
   }));
   delete job.monthInvoiced;
+  delete job.monthInvoicedAmount;
   (job.variations||[]).forEach(v => {
-    if(v.invoicedAmount === undefined){
-      // Migrate legacy all-or-nothing flag to a partial-invoicing amount (once only).
-      if(v.invoiced !== undefined){
-        v.invoicedAmount = v.invoiced ? (v.amount||0) : 0;
+    if(v.invoiceLog === undefined){
+      // Migrate whichever legacy shape exists (boolean, then flat amount) into a dated log, once only.
+      let amt;
+      if(v.invoicedAmount !== undefined){
+        amt = v.invoicedAmount;
+      } else if(v.invoiced !== undefined){
+        amt = v.invoiced ? (v.amount||0) : 0;
       } else if(AUTO_INVOICED_MONTHS_2026.some(mk => v.month === '2026-'+mk)){
-        v.invoicedAmount = v.amount||0;
+        amt = v.amount||0;
       } else {
-        v.invoicedAmount = 0;
+        amt = 0;
       }
-      delete v.invoiced;
+      v.invoiceLog = legacyAmountToLog(amt);
     }
+    delete v.invoiced;
+    delete v.invoicedAmount;
   });
 }
 
@@ -4218,12 +4232,12 @@ function computeInvoiceSummary(){
       const field = commercialFieldFor(year, mk);
       const val = j[field] || 0;
       total += val;
-      invoiced += Math.min((j.monthInvoicedAmount && j.monthInvoicedAmount[field]) || 0, val);
+      invoiced += Math.min(sumLog(j.monthInvoiceLog && j.monthInvoiceLog[field]), val);
     }));
     (j.variations||[]).forEach(v => {
       if(v.status === 'Approved'){
         total += (v.amount||0);
-        invoiced += Math.min(v.invoicedAmount||0, v.amount||0);
+        invoiced += Math.min(sumLog(v.invoiceLog), v.amount||0);
       }
     });
   });
@@ -4312,11 +4326,18 @@ function tenderFollowUpHtml(t){
     : `<select class="followup-status" data-id="${t.id}">
         ${statusOptions.map(o => `<option value="${o}" ${o===t.status?'selected':''}>${o}</option>`).join('')}
       </select>`;
+  const chaseDateHtml = READ_ONLY
+    ? fmtDate(t.chaseDate)
+    : `<input type="date" class="followup-chasedate" data-id="${t.id}" value="${t.chaseDate||''}"/>`;
   return `<div class="job-meta" style="margin-bottom:8px;">FOLLOW-UP</div>
-    <div class="field-row" style="grid-template-columns:200px 1fr;align-items:start;">
+    <div class="field-row" style="grid-template-columns:200px 200px 1fr;align-items:start;">
       <div class="field">
         <label>Outcome</label>
         ${outcomeHtml}
+      </div>
+      <div class="field">
+        <label>Chase-Up Date</label>
+        ${chaseDateHtml}
       </div>
       <div class="field">
         <label>Remarks history</label>
@@ -4330,18 +4351,23 @@ function renderTenderTable(){
   document.getElementById('tendersCount').textContent = tenders.length;
   const body = document.getElementById('tenderBody');
   if(!list.length){
-    body.innerHTML = '<tr class="empty-row"><td colspan="10">No tenders match this view.</td></tr>';
+    body.innerHTML = '<tr class="empty-row"><td colspan="12">No tenders match this view.</td></tr>';
     return;
   }
   body.innerHTML = list.map(t => {
     const days = daysFromToday(t.dueDate);
-    let flareClass = '', flareTag = '';
+    const chaseDays = daysFromToday(t.chaseDate);
+    let flareClass = '', flareTag = '', chaseFlareTag = '';
     if(t.status === 'Pending' && days !== null){
       if(days < 0){ flareClass='flare-overdue'; flareTag = '<div class="flare-tag">overdue '+Math.abs(days)+'d</div>'; }
       else if(days <= 7){ flareClass='flare-soon'; flareTag = '<div class="flare-tag soon">due in '+days+'d</div>'; }
     }
+    if(t.status === 'Submitted' && chaseDays !== null){
+      if(chaseDays < 0){ flareClass='flare-overdue'; chaseFlareTag = '<div class="flare-tag">overdue '+Math.abs(chaseDays)+'d</div>'; }
+      else if(chaseDays <= 7){ flareClass='flare-soon'; chaseFlareTag = '<div class="flare-tag soon">due in '+chaseDays+'d</div>'; }
+    }
     const isOpen = expandedTenders.has(t.id);
-    const detailRow = isOpen ? `<tr class="job-detail-row" data-detail-for="${t.id}"><td></td><td colspan="8">${tenderFollowUpHtml(t)}</td></tr>` : '';
+    const detailRow = isOpen ? `<tr class="job-detail-row" data-detail-for="${t.id}"><td></td><td colspan="10">${tenderFollowUpHtml(t)}</td></tr>` : '';
     return `<tr class="${flareClass}" data-id="${t.id}" data-type="tender">
       <td><button type="button" class="btn ghost icon small expand-btn" data-id="${t.id}">${isOpen ? '▾' : '▸'}</button></td>
       <td class="wrap job-cell">${escapeHtml(t.jobName||'—')}${(t.remarksLog&&t.remarksLog.length) ? '<div class="job-meta">'+escapeHtml(t.remarksLog[t.remarksLog.length-1].text)+'</div>' : ''}</td>
@@ -4349,6 +4375,8 @@ function renderTenderTable(){
       <td>${escapeHtml(t.city||'—')}</td>
       <td>${fmtDate(t.dateReceived)}</td>
       <td>${fmtDate(t.dueDate)}${flareTag}</td>
+      <td>${fmtDate(t.dateSubmitted)}</td>
+      <td>${fmtDate(t.chaseDate)}${chaseFlareTag}</td>
       <td class="num">${fmtMoneyFull(t.tenderSum)}</td>
       <td class="num">${fmtPct(t.profitPct)}</td>
       <td>${statusPill(t.status)}</td>
@@ -4433,7 +4461,7 @@ function computeJobInvoiceProgress(j){
   FORECAST_YEARS.forEach(year => FORECAST_MONTH_KEYS.forEach(mk => {
     const field = commercialFieldFor(year, mk);
     const val = j[field] || 0;
-    invoiced += Math.min((j.monthInvoicedAmount && j.monthInvoicedAmount[field]) || 0, val);
+    invoiced += Math.min(sumLog(j.monthInvoiceLog && j.monthInvoiceLog[field]), val);
   }));
   const remaining = (j.contractValue || 0) - invoiced;
   return {invoiced, remaining};
@@ -4446,24 +4474,34 @@ function invoiceProgressHtml(j){
     <div class="job-meta" style="color:${remainingColor};">Remaining ${fmtMoney(p.remaining)}</div>`;
 }
 
-function invoiceAmountCellHtml(inputClass, dataAttrs, inv, amt){
-  inv = Math.min(inv||0, amt||0);
+function invoiceLogHtml(kind, jobId, subKey, log, amt){
+  log = log || [];
+  amt = amt || 0;
+  const inv = Math.min(sumLog(log), amt);
   const cls = amt>0 && inv>=amt ? 'won' : (inv>0 ? 'partial' : 'pending');
   const label = amt>0 && inv>=amt ? 'Fully Invoiced' : (inv>0 ? 'Partially Invoiced' : 'Not Invoiced');
   const pill = `<span class="pill ${cls}"><span class="pill-dot"></span>${label}</span>`;
+  const summary = `<div>${pill} <span class="job-meta">${fmtMoneyFull(inv)} of ${fmtMoneyFull(amt)}</span></div>`;
+  const entries = log.map((e,idx) => ({e,idx})).reverse().map(({e,idx}) => `
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span class="job-meta" style="flex:1;">${fmtMoneyFull(e.amount)} &middot; ${fmtLogTimestamp(e.timestamp)}</span>
+      ${READ_ONLY ? '' : `<button type="button" class="btn ghost icon small remove-invoice-log-btn" data-kind="${kind}" data-id="${jobId}" data-subkey="${escapeHtml(subKey)}" data-logidx="${idx}">&times;</button>`}
+    </div>`).join('');
+  const list = `<div style="max-height:100px;overflow-y:auto;margin:4px 0;min-width:170px;">${entries || '<div class="job-meta" style="color:var(--text-faint);">No invoices logged yet.</div>'}</div>`;
   if(READ_ONLY){
-    return `<div>${pill}</div><div class="job-meta">${fmtMoneyFull(inv)} of ${fmtMoneyFull(amt)}</div>`;
+    return `${summary}${log.length ? list : ''}`;
   }
-  return `<div style="display:flex;flex-direction:column;gap:4px;">
-    <input type="number" step="0.01" min="0" max="${amt}" class="${inputClass}" ${dataAttrs} value="${inv}" style="width:110px;text-align:right;" title="Amount invoiced so far"/>
-    <div class="job-meta">${pill} of ${fmtMoneyFull(amt)}</div>
+  const addRow = `<div style="display:flex;gap:4px;">
+    <input type="number" step="0.01" min="0" class="invoice-log-amount" data-kind="${kind}" data-id="${jobId}" data-subkey="${escapeHtml(subKey)}" placeholder="$ amount" style="width:90px;"/>
+    <button type="button" class="btn ghost small add-invoice-log-btn" data-kind="${kind}" data-id="${jobId}" data-subkey="${escapeHtml(subKey)}">+ Log</button>
   </div>`;
+  return `${summary}${list}${addRow}`;
 }
 
 function variationRowHtml(j, v){
   const statusOptions = ['Pending','Approved','Rejected'];
   const amt = v.amount||0;
-  const inv = Math.min(v.invoicedAmount||0, amt);
+  const inv = Math.min(sumLog(v.invoiceLog), amt);
   const rowClass = amt>0 && inv>=amt ? 'flare-invoiced' : (inv>0 ? 'flare-partial-invoiced' : 'flare-not-invoiced');
   const descCell = READ_ONLY ? escapeHtml(v.description||'—') : `<input type="text" class="var-desc" data-id="${j.id}" data-varid="${v.id}" value="${escapeHtml(v.description||'')}" placeholder="Describe the variation" style="width:100%;min-width:180px;"/>`;
   const statusCell = READ_ONLY ? v.status : `<select class="var-status" data-id="${j.id}" data-varid="${v.id}">${statusOptions.map(o=>`<option value="${o}" ${o===v.status?'selected':''}>${o}</option>`).join('')}</select>`;
@@ -4474,7 +4512,7 @@ function variationRowHtml(j, v){
     <td class="num">${READ_ONLY ? fmtMoneyFull(v.amount) : `<input type="number" step="0.01" class="var-amount" data-id="${j.id}" data-varid="${v.id}" value="${v.amount||0}" style="width:100px;text-align:right;"/>`}</td>
     <td>${statusCell}</td>
     <td>${monthCell}</td>
-    <td>${invoiceAmountCellHtml('var-invoiced-amount', `data-id="${j.id}" data-varid="${v.id}"`, inv, amt)}</td>
+    <td>${invoiceLogHtml('variation', j.id, v.id, v.invoiceLog, amt)}</td>
     <td>${removeCell}</td>
   </tr>`;
 }
@@ -4516,14 +4554,15 @@ function variationsSectionHtml(j){
 }
 
 function monthlyGridHtml(j){
-  const invoicedMap = j.monthInvoicedAmount || {};
+  const logMap = j.monthInvoiceLog || {};
   const rows = FORECAST_YEARS.map(year => FORECAST_MONTH_KEYS.map((mk,i) => {
     const field = commercialFieldFor(year, mk);
     const val = j[field] || 0;
-    const inv = Math.min(invoicedMap[field]||0, val);
+    const log = logMap[field] || [];
+    const inv = Math.min(sumLog(log), val);
     const rowClass = val>0 && inv>=val ? 'flare-invoiced' : (inv>0 ? 'flare-partial-invoiced' : 'flare-not-invoiced');
     const valueCell = READ_ONLY ? fmtMoneyFull(val) : `<input type="number" step="0.01" class="claim-input" data-id="${j.id}" data-field="${field}" value="${val}" style="width:110px;text-align:right;"/>`;
-    return `<tr class="${rowClass}"><td>${FORECAST_MONTH_LABELS[i]} ${year}</td><td class="num">${valueCell}</td><td>${invoiceAmountCellHtml('month-invoiced-amount', `data-id="${j.id}" data-field="${field}"`, inv, val)}</td></tr>`;
+    return `<tr class="${rowClass}"><td>${FORECAST_MONTH_LABELS[i]} ${year}</td><td class="num">${valueCell}</td><td>${invoiceLogHtml('month', j.id, field, log, val)}</td></tr>`;
   }).join('')).join('');
   return `<div class="job-meta" style="margin-bottom:8px;">MONTHLY FORECAST &middot; as imported from the spreadsheet<span class="edit-only"> &mdash; edit any month directly to shift it</span></div>
     <table style="max-width:380px;"><thead><tr><th>Month</th><th style="text-align:right">$</th><th>Invoiced</th></tr></thead><tbody>${rows}</tbody></table>`;
@@ -4792,6 +4831,7 @@ const TENDER_FIELDS = [
   {key:'dateReceived', label:'Date Received', type:'date'},
   {key:'dueDate', label:'Due Date', type:'date'},
   {key:'dateSubmitted', label:'Date Submitted', type:'date'},
+  {key:'chaseDate', label:'Chase-Up Date', type:'date'},
   {key:'tenderSum', label:'Tender Sum ($)', type:'number', step:'0.01'},
   {key:'profitPct', label:'Profit %', type:'number', step:'0.1', toDisplay: v => (v===null||v===undefined) ? '' : Math.round(v*1000)/10, fromDisplay: v => (v===null||v===undefined) ? null : v/100},
   {key:'status', label:'Status', type:'select', options:['Pending','Submitted','Won','Lost','Declined']},
@@ -4908,6 +4948,38 @@ function addRemark(tenderId, inputEl){
   saveState();
   renderTenderTable();
 }
+
+function invoiceLogFor(kind, jobId, subKey){
+  const j = jobs.find(x => x.id === jobId);
+  if(!j) return null;
+  if(kind === 'variation'){
+    const v = (j.variations||[]).find(x => x.id === subKey);
+    if(!v) return null;
+    if(!v.invoiceLog) v.invoiceLog = [];
+    return v.invoiceLog;
+  }
+  if(!j.monthInvoiceLog) j.monthInvoiceLog = {};
+  if(!j.monthInvoiceLog[subKey]) j.monthInvoiceLog[subKey] = [];
+  return j.monthInvoiceLog[subKey];
+}
+function addInvoiceLogEntry(kind, jobId, subKey, inputEl){
+  const amount = parseFloat(inputEl.value);
+  if(!amount || amount <= 0) return;
+  const log = invoiceLogFor(kind, jobId, subKey);
+  if(!log) return;
+  log.push({amount, timestamp: new Date().toISOString()});
+  expandedJobs.add(jobId);
+  saveState();
+  renderAll();
+}
+function removeInvoiceLogEntry(kind, jobId, subKey, logIdx){
+  const log = invoiceLogFor(kind, jobId, subKey);
+  if(!log) return;
+  log.splice(logIdx, 1);
+  expandedJobs.add(jobId);
+  saveState();
+  renderAll();
+}
 document.getElementById('tenderBody').addEventListener('click', e => {
   const editBtn = e.target.closest('.edit-btn');
   if(editBtn){ openModal('tender', editBtn.dataset.id); return; }
@@ -4934,6 +5006,9 @@ document.getElementById('tenderBody').addEventListener('change', e => {
   if(e.target.classList.contains('followup-status')){
     const t = tenders.find(x => x.id === e.target.dataset.id);
     if(t){ t.status = e.target.value; saveState(); renderAll(); }
+  } else if(e.target.classList.contains('followup-chasedate')){
+    const t = tenders.find(x => x.id === e.target.dataset.id);
+    if(t){ t.chaseDate = e.target.value || null; saveState(); renderAll(); }
   }
 });
 document.getElementById('jobBody').addEventListener('click', e => {
@@ -4970,7 +5045,7 @@ document.getElementById('jobBody').addEventListener('click', e => {
     const j = jobs.find(x => x.id === addVarBtn.dataset.id);
     if(j){
       if(!j.variations) j.variations = [];
-      j.variations.push({id: uid('v'), description:'', amount:0, status:'Pending', month: STAGE_MONTH_OPTIONS[0].value, invoicedAmount:0});
+      j.variations.push({id: uid('v'), description:'', amount:0, status:'Pending', month: STAGE_MONTH_OPTIONS[0].value, invoiceLog:[]});
       saveState(); renderAll();
     }
     return;
@@ -4991,6 +5066,23 @@ document.getElementById('jobBody').addEventListener('click', e => {
       j.complete = !j.complete;
       saveState(); renderAll();
     }
+    return;
+  }
+  const addInvoiceLogBtn = e.target.closest('.add-invoice-log-btn');
+  if(addInvoiceLogBtn){
+    const input = addInvoiceLogBtn.parentElement.querySelector('.invoice-log-amount');
+    addInvoiceLogEntry(addInvoiceLogBtn.dataset.kind, addInvoiceLogBtn.dataset.id, addInvoiceLogBtn.dataset.subkey, input);
+    return;
+  }
+  const removeInvoiceLogBtn = e.target.closest('.remove-invoice-log-btn');
+  if(removeInvoiceLogBtn){
+    removeInvoiceLogEntry(removeInvoiceLogBtn.dataset.kind, removeInvoiceLogBtn.dataset.id, removeInvoiceLogBtn.dataset.subkey, parseInt(removeInvoiceLogBtn.dataset.logidx, 10));
+  }
+});
+document.getElementById('jobBody').addEventListener('keydown', e => {
+  if(e.target.classList.contains('invoice-log-amount') && e.key === 'Enter'){
+    e.preventDefault();
+    addInvoiceLogEntry(e.target.dataset.kind, e.target.dataset.id, e.target.dataset.subkey, e.target);
   }
 });
 document.getElementById('jobBody').addEventListener('change', e => {
@@ -4999,12 +5091,6 @@ document.getElementById('jobBody').addEventListener('change', e => {
   if(e.target.classList.contains('claim-input')){
     j[e.target.dataset.field] = parseFloat(e.target.value) || 0;
     saveState(); renderAll();
-  } else if(e.target.classList.contains('month-invoiced-amount')){
-    if(!j.monthInvoicedAmount) j.monthInvoicedAmount = {};
-    const field = e.target.dataset.field;
-    const amt = j[field] || 0;
-    j.monthInvoicedAmount[field] = Math.max(0, Math.min(parseFloat(e.target.value) || 0, amt));
-    saveState(); renderAll();
   } else if(e.target.classList.contains('var-desc') || e.target.classList.contains('var-amount') || e.target.classList.contains('var-status') || e.target.classList.contains('var-month')){
     const v = (j.variations||[]).find(x => x.id === e.target.dataset.varid);
     if(!v) return;
@@ -5012,12 +5098,6 @@ document.getElementById('jobBody').addEventListener('change', e => {
     else if(e.target.classList.contains('var-amount')) v.amount = parseFloat(e.target.value) || 0;
     else if(e.target.classList.contains('var-status')) v.status = e.target.value;
     else if(e.target.classList.contains('var-month')) v.month = e.target.value;
-    saveState(); renderAll();
-  } else if(e.target.classList.contains('var-invoiced-amount')){
-    const v = (j.variations||[]).find(x => x.id === e.target.dataset.varid);
-    if(!v) return;
-    const amt = v.amount||0;
-    v.invoicedAmount = Math.max(0, Math.min(parseFloat(e.target.value) || 0, amt));
     saveState(); renderAll();
   } else if(e.target.classList.contains('link-label') || e.target.classList.contains('link-url')){
     const l = (j.links||[]).find(x => x.id === e.target.dataset.linkid);
@@ -5136,11 +5216,19 @@ function unionById(localList, importedList){
   (localList||[]).forEach(item => map.set(item.id, item)); // local wins on same-id conflict
   return Array.from(map.values());
 }
-function maxMergeInvoiced(localDict, importedDict){
+function mergeInvoiceLogDicts(localDict, importedDict){
   localDict = localDict || {}; importedDict = importedDict || {};
   const keys = new Set([...Object.keys(localDict), ...Object.keys(importedDict)]);
   const merged = {};
-  keys.forEach(k => { merged[k] = Math.max(localDict[k]||0, importedDict[k]||0); });
+  keys.forEach(k => {
+    const combined = [...(localDict[k]||[]), ...(importedDict[k]||[])];
+    const seen = new Set();
+    merged[k] = combined.filter(e => {
+      const key = JSON.stringify(e);
+      if(seen.has(key)) return false;
+      seen.add(key); return true;
+    });
+  });
   return merged;
 }
 function mergePeerFields(local, imported, fields){
@@ -5164,7 +5252,7 @@ function mergeJobPeer(local, imported){
   const merged = mergePeerFields(local, imported, JOB_MERGE_FIELDS);
   merged.variations = unionById(local.variations, imported.variations);
   merged.links = unionById(local.links, imported.links);
-  merged.monthInvoicedAmount = maxMergeInvoiced(local.monthInvoicedAmount, imported.monthInvoicedAmount);
+  merged.monthInvoiceLog = mergeInvoiceLogDicts(local.monthInvoiceLog, imported.monthInvoiceLog);
   merged.jobType = local.jobType;
   merged.complete = local.complete;
   merged.stages = local.stages;
