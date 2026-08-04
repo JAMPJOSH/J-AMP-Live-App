@@ -4021,6 +4021,7 @@ function buildFreshJob(raw, i){
   rec._seed = Object.assign({}, raw);
   rec.jobType = classifyJobType(rec);
   rec.stages = Object.assign({}, DEFAULT_STAGES);
+  rec.stageAmounts = {};
   ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].forEach(mk => { rec['fy27'+mk] = 0; });
   rec.variations = [];
   rec.links = [];
@@ -4575,8 +4576,8 @@ function jobDetailHtml(j){
   } else {
     const stages = computeStages(j);
     const total = stages.reduce((s,x) => s + x.pct*100, 0);
-    const rows = stages.map(s => `<tr><td>${s.name}</td><td class="num">${(s.pct*100).toFixed(1)}%</td><td class="num">${fmtMoneyFull(s.amount)}</td></tr>`).join('');
-    main = `<div class="job-meta" style="margin-bottom:8px;">RESIDENTIAL STAGE SPLIT &middot; % of contract sum<span class="edit-only"> &middot; set via Edit</span> &middot; for reference only &mdash; timing comes from the monthly forecast below</div>
+    const rows = stages.map(s => `<tr><td>${s.name}${s.overridden ? ' <span class="job-meta" style="color:var(--info);">(fixed $)</span>' : ''}</td><td class="num">${(s.pct*100).toFixed(1)}%</td><td class="num">${fmtMoneyFull(s.amount)}</td></tr>`).join('');
+    main = `<div class="job-meta" style="margin-bottom:8px;">RESIDENTIAL STAGE SPLIT &middot; % of contract sum, or a fixed $ where set<span class="edit-only"> &middot; set via Edit</span> &middot; for reference only &mdash; timing comes from the monthly forecast below</div>
       <table style="max-width:300px;"><thead><tr><th>Stage</th><th style="text-align:right">%</th><th style="text-align:right">$</th></tr></thead><tbody>${rows}
       <tr style="font-weight:700;border-top:1px solid var(--edge);"><td>Total</td><td class="num">${total.toFixed(1)}%</td><td class="num">${fmtMoneyFull(stages.reduce((s,x)=>s+x.amount,0))}</td></tr>
       </tbody></table>
@@ -4858,9 +4859,16 @@ const DEFAULT_STAGES = {undergrounds:10, roughIn:40, cutOut:5, fitOff:40, handOv
 
 function computeStages(job){
   const stages = job.stages || DEFAULT_STAGES;
+  const overrides = job.stageAmounts || {};
   return STAGE_DEFS.map(s => {
+    const override = overrides[s.key];
+    if(override !== undefined && override !== null){
+      const amount = override;
+      const pct = (job.contractValue||0) > 0 ? amount / job.contractValue : 0;
+      return {name:s.label, pct, amount, overridden:true};
+    }
     const pct = (stages[s.key] || 0) / 100;
-    return {name:s.label, pct, amount:(job.contractValue||0) * pct};
+    return {name:s.label, pct, amount:(job.contractValue||0) * pct, overridden:false};
   });
 }
 
@@ -4895,14 +4903,20 @@ function fieldHtml(f, value){
   return `<div class="field"><label>${f.label}</label><input type="${f.type}" name="${f.key}" ${f.step?`step="${f.step}"`:''} value="${escapeHtml(val)}" ${f.required?'required':''}/></div>`;
 }
 
-function stageEditorHtml(stages){
+function stageEditorHtml(stages, stageAmounts){
   const s = Object.assign({}, DEFAULT_STAGES, stages || {});
-  const rows = STAGE_DEFS.map(d => `
+  const amounts = stageAmounts || {};
+  const rows = STAGE_DEFS.map(d => {
+    const amt = amounts[d.key];
+    return `
     <div class="field" style="margin-bottom:8px;">
       <label>${d.label} %</label>
       <input type="number" step="0.1" min="0" max="100" class="stage-input" name="stage_${d.key}" value="${s[d.key]}"/>
-    </div>`).join('');
+      <input type="number" step="0.01" min="0" class="stage-amount-input" name="stageAmt_${d.key}" placeholder="or fixed $" value="${amt!==undefined && amt!==null ? amt : ''}" style="margin-top:4px;"/>
+    </div>`;
+  }).join('');
   return `<div class="job-meta" style="margin:14px 0 8px;text-transform:uppercase;letter-spacing:.08em;">Residential Stage % (per this job/builder)</div>
+    <div class="job-meta" style="margin-bottom:8px;">Leave the $ field blank to use the %. Fill it in to invoice a fixed amount for that stage instead &mdash; for builders who don't follow the standard split.</div>
     <div class="field-row" style="grid-template-columns:repeat(3,1fr);">${rows}</div>
     <div class="job-meta" id="stageTotalReadout" style="text-align:right;"></div>`;
 }
@@ -4920,7 +4934,7 @@ function openModal(type, id){
   const record = id ? (type === 'tender' ? tenders : jobs).find(r => r.id === id) : {};
   document.getElementById('modalTitle').textContent = (id ? 'Edit ' : 'New ') + (type === 'tender' ? 'Tender' : 'Job');
   const container = document.getElementById('modalFields');
-  container.innerHTML = fields.map(f => fieldHtml(f, f.toDisplay ? f.toDisplay(record[f.key]) : record[f.key])).join('') + (type === 'job' ? stageEditorHtml(record.stages) : '');
+  container.innerHTML = fields.map(f => fieldHtml(f, f.toDisplay ? f.toDisplay(record[f.key]) : record[f.key])).join('') + (type === 'job' ? stageEditorHtml(record.stages, record.stageAmounts) : '');
   document.getElementById('deleteEntryBtn').hidden = !id;
   document.getElementById('overlay').hidden = false;
   container.querySelector('input,select,textarea')?.focus();
@@ -5127,7 +5141,13 @@ document.getElementById('entryForm').addEventListener('submit', e => {
   });
   if(type === 'job'){
     record.stages = {};
-    STAGE_DEFS.forEach(d => { record.stages[d.key] = parseFloat(formData.get('stage_' + d.key)) || 0; });
+    record.stageAmounts = {};
+    STAGE_DEFS.forEach(d => {
+      record.stages[d.key] = parseFloat(formData.get('stage_' + d.key)) || 0;
+      const raw = formData.get('stageAmt_' + d.key);
+      const val = raw === null || raw === '' ? null : parseFloat(raw);
+      if(val !== null && !isNaN(val)) record.stageAmounts[d.key] = val;
+    });
   }
   const list = type === 'tender' ? tenders : jobs;
   if(id){
@@ -5256,6 +5276,7 @@ function mergeJobPeer(local, imported){
   merged.jobType = local.jobType;
   merged.complete = local.complete;
   merged.stages = local.stages;
+  merged.stageAmounts = local.stageAmounts;
   return merged;
 }
 
