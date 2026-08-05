@@ -4025,6 +4025,7 @@ function buildFreshJob(raw, i){
   rec.stageAmounts = {};
   ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].forEach(mk => { rec['fy27'+mk] = 0; });
   rec.variations = [];
+  rec.credits = [];
   rec.links = [];
   rec.monthInvoiceLog = {};
   rec.complete = false;
@@ -4242,6 +4243,9 @@ function computeInvoiceSummary(){
         invoiced += Math.min(sumLog(v.invoiceLog), v.amount||0);
       }
     });
+    (j.credits||[]).forEach(c => {
+      if(c.status === 'Approved') total -= (c.amount||0);
+    });
   });
   return {invoiced, outstanding: total - invoiced, total};
 }
@@ -4458,6 +4462,17 @@ function varBadge(j){
   return parts.length ? `<div class="job-meta">${parts.join(' &middot; ')}</div>` : '';
 }
 
+function creditBadge(j){
+  const credits = j.credits || [];
+  if(!credits.length) return '';
+  const approved = credits.filter(c => c.status === 'Approved').reduce((s,c) => s + (c.amount||0), 0);
+  const pending = credits.filter(c => c.status === 'Pending').length;
+  const parts = [];
+  if(approved > 0) parts.push('-' + fmtMoney(approved) + ' credit');
+  if(pending > 0) parts.push(pending + ' pending credit' + (pending>1?'s':''));
+  return parts.length ? `<div class="job-meta" style="color:var(--bad);">${parts.join(' &middot; ')}</div>` : '';
+}
+
 function computeJobInvoiceProgress(j){
   let invoiced = 0;
   FORECAST_YEARS.forEach(year => FORECAST_MONTH_KEYS.forEach(mk => {
@@ -4465,7 +4480,8 @@ function computeJobInvoiceProgress(j){
     const val = j[field] || 0;
     invoiced += Math.min(sumLog(j.monthInvoiceLog && j.monthInvoiceLog[field]), val);
   }));
-  const remaining = (j.contractValue || 0) - invoiced;
+  const approvedCredits = (j.credits||[]).filter(c => c.status === 'Approved').reduce((s,c) => s + (c.amount||0), 0);
+  const remaining = (j.contractValue || 0) - approvedCredits - invoiced;
   return {invoiced, remaining};
 }
 
@@ -4555,6 +4571,34 @@ function variationsSectionHtml(j){
     ${addBtn}`;
 }
 
+function creditRowHtml(j, c){
+  const statusOptions = ['Pending','Approved','Rejected'];
+  const rowClass = c.status === 'Approved' ? 'flare-invoiced' : (c.status === 'Rejected' ? '' : 'flare-not-invoiced');
+  const descCell = READ_ONLY ? escapeHtml(c.description||'—') : `<input type="text" class="credit-desc" data-id="${j.id}" data-creditid="${c.id}" value="${escapeHtml(c.description||'')}" placeholder="Reason for credit" style="width:100%;min-width:180px;"/>`;
+  const statusCell = READ_ONLY ? c.status : `<select class="credit-status" data-id="${j.id}" data-creditid="${c.id}">${statusOptions.map(o=>`<option value="${o}" ${o===c.status?'selected':''}>${o}</option>`).join('')}</select>`;
+  const monthCell = READ_ONLY ? (STAGE_MONTH_OPTIONS.find(o=>o.value===c.month)||{}).label||'—' : monthSelectHtml('credit-month', `data-id="${j.id}" data-creditid="${c.id}"`, c.month);
+  const removeCell = READ_ONLY ? '' : `<button type="button" class="btn ghost icon small remove-credit-btn" data-id="${j.id}" data-creditid="${c.id}">&times;</button>`;
+  return `<tr data-credit-id="${c.id}" class="${rowClass}">
+    <td class="wrap">${descCell}</td>
+    <td class="num">${READ_ONLY ? fmtMoneyFull(c.amount) : `<input type="number" step="0.01" class="credit-amount" data-id="${j.id}" data-creditid="${c.id}" value="${c.amount||0}" style="width:100px;text-align:right;"/>`}</td>
+    <td>${statusCell}</td>
+    <td>${monthCell}</td>
+    <td>${removeCell}</td>
+  </tr>`;
+}
+
+function creditsSectionHtml(j){
+  const credits = j.credits || [];
+  const approvedTotal = credits.filter(c => c.status === 'Approved').reduce((s,c) => s + (c.amount||0), 0);
+  const rows = credits.map(c => creditRowHtml(j, c)).join('');
+  const addBtn = READ_ONLY ? '' : `<button type="button" class="btn ghost small add-credit-btn" data-id="${j.id}" style="margin-top:8px;">+ Add Credit</button>`;
+  if(READ_ONLY && !credits.length) return '';
+  return `<div class="job-meta" style="margin:16px 0 8px;text-transform:uppercase;letter-spacing:.08em;">Credits ${credits.length ? '&middot; '+fmtMoneyFull(approvedTotal)+' approved (deducted from contract)' : '(money credited back to the builder/client)'}</div>
+    <table style="max-width:620px;"><thead><tr><th>Description</th><th style="text-align:right">$</th><th>Status</th><th>Month</th><th></th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="5" style="color:var(--text-faint);">No credits logged yet.</td></tr>'}</tbody></table>
+    ${addBtn}`;
+}
+
 function monthlyGridHtml(j){
   const logMap = j.monthInvoiceLog || {};
   const rows = FORECAST_YEARS.map(year => FORECAST_MONTH_KEYS.map((mk,i) => {
@@ -4584,7 +4628,7 @@ function jobDetailHtml(j){
       </tbody></table>
       <div style="margin-top:14px;">${monthlyGridHtml(j)}</div>`;
   }
-  return main + linksSectionHtml(j) + variationsSectionHtml(j);
+  return main + linksSectionHtml(j) + variationsSectionHtml(j) + creditsSectionHtml(j);
 }
 
 function renderJobTable(){
@@ -4604,7 +4648,7 @@ function renderJobTable(){
       <td><button type="button" class="btn ghost icon small expand-btn" data-id="${j.id}">${isOpen ? '▾' : '▸'}</button></td>
       <td class="wrap job-cell">${escapeHtml(j.jobName||'—')}${j.state ? '<div class="job-meta">'+escapeHtml(j.state)+'</div>' : ''}</td>
       <td>${escapeHtml(j.builder||'—')}</td>
-      <td class="num">${fmtMoneyFull(j.contractValue)}${varBadge(j)}</td>
+      <td class="num">${fmtMoneyFull(j.contractValue)}${varBadge(j)}${creditBadge(j)}</td>
       <td class="num">${invoiceProgressHtml(j)}</td>
       <td>${bandPill(j.probBand)}</td>
       <td>${typePill(j.jobType)}</td>
@@ -4887,6 +4931,7 @@ function jobMonthlyAmount(job, year, mk){
   const key = year + '-' + mk;
   let total = job[commercialFieldFor(year, mk)] || 0;
   (job.variations||[]).forEach(v => { if(v.status === 'Approved' && v.month === key) total += (v.amount||0); });
+  (job.credits||[]).forEach(c => { if(c.status === 'Approved' && c.month === key) total -= (c.amount||0); });
   return total;
 }
 function monthlyForJobYear(job, year){
@@ -5074,6 +5119,25 @@ document.getElementById('jobBody').addEventListener('click', e => {
     }
     return;
   }
+  const addCreditBtn = e.target.closest('.add-credit-btn');
+  if(addCreditBtn){
+    const j = jobs.find(x => x.id === addCreditBtn.dataset.id);
+    if(j){
+      if(!j.credits) j.credits = [];
+      j.credits.push({id: uid('c'), description:'', amount:0, status:'Pending', month: STAGE_MONTH_OPTIONS[0].value});
+      saveState(); renderAll();
+    }
+    return;
+  }
+  const removeCreditBtn = e.target.closest('.remove-credit-btn');
+  if(removeCreditBtn){
+    const j = jobs.find(x => x.id === removeCreditBtn.dataset.id);
+    if(j){
+      j.credits = (j.credits||[]).filter(c => c.id !== removeCreditBtn.dataset.creditid);
+      saveState(); renderAll();
+    }
+    return;
+  }
   const completeBtn = e.target.closest('.complete-toggle-btn');
   if(completeBtn){
     const j = jobs.find(x => x.id === completeBtn.dataset.id);
@@ -5113,6 +5177,14 @@ document.getElementById('jobBody').addEventListener('change', e => {
     else if(e.target.classList.contains('var-amount')) v.amount = parseFloat(e.target.value) || 0;
     else if(e.target.classList.contains('var-status')) v.status = e.target.value;
     else if(e.target.classList.contains('var-month')) v.month = e.target.value;
+    saveState(); renderAll();
+  } else if(e.target.classList.contains('credit-desc') || e.target.classList.contains('credit-amount') || e.target.classList.contains('credit-status') || e.target.classList.contains('credit-month')){
+    const c = (j.credits||[]).find(x => x.id === e.target.dataset.creditid);
+    if(!c) return;
+    if(e.target.classList.contains('credit-desc')) c.description = e.target.value;
+    else if(e.target.classList.contains('credit-amount')) c.amount = parseFloat(e.target.value) || 0;
+    else if(e.target.classList.contains('credit-status')) c.status = e.target.value;
+    else if(e.target.classList.contains('credit-month')) c.month = e.target.value;
     saveState(); renderAll();
   } else if(e.target.classList.contains('link-label') || e.target.classList.contains('link-url')){
     const l = (j.links||[]).find(x => x.id === e.target.dataset.linkid);
@@ -5272,6 +5344,7 @@ function mergeTenderPeer(local, imported){
 function mergeJobPeer(local, imported){
   const merged = mergePeerFields(local, imported, JOB_MERGE_FIELDS);
   merged.variations = unionById(local.variations, imported.variations);
+  merged.credits = unionById(local.credits, imported.credits);
   merged.links = unionById(local.links, imported.links);
   merged.monthInvoiceLog = mergeInvoiceLogDicts(local.monthInvoiceLog, imported.monthInvoiceLog);
   merged.jobType = local.jobType;
