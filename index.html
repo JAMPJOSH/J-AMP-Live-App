@@ -5510,33 +5510,21 @@ function forecastCellStyle(job, year, mk){
   const field = commercialFieldFor(year, mk);
   const key = year + '-' + mk;
   const baseAmt = job[field] || 0;
-  let variationAmt = 0, variationInvoiced = 0, hasVariation = false;
-  (job.variations||[]).forEach(v => {
-    if(v.status === 'Approved' && v.month === key){
-      variationAmt += (v.amount||0);
-      variationInvoiced += Math.min(sumLog(v.invoiceLog), v.amount||0);
-      hasVariation = true;
-    }
-  });
   let creditAmt = 0;
   (job.credits||[]).forEach(c => { if(c.status === 'Approved' && c.month === key) creditAmt += (c.amount||0); });
-  const total = Math.round((baseAmt + variationAmt - creditAmt) * 100) / 100;
-  const baseInvoiced = Math.min(sumLog(job.monthInvoiceLog && job.monthInvoiceLog[field]), baseAmt);
-  const invoiced = baseInvoiced + variationInvoiced;
+  const total = Math.round((baseAmt - creditAmt) * 100) / 100;
+  const invoiced = Math.min(sumLog(job.monthInvoiceLog && job.monthInvoiceLog[field]), baseAmt);
   let style = XLSX_STYLE.DEFAULT;
-  if(total > 0){
-    if(hasVariation) style = XLSX_STYLE.BLUE;
-    else if(invoiced >= total) style = XLSX_STYLE.GREEN;
-    else style = XLSX_STYLE.YELLOW;
-  }
+  if(total > 0) style = invoiced > 0 ? XLSX_STYLE.GREEN : XLSX_STYLE.YELLOW;
   return {total, style};
 }
 const FORECAST_BAND_ORDER = ['Confirmed (>90%)', 'Possible (50-89%)', 'Unlikely (<50%)'];
+const FORECAST_LEAD_COLS = 6;
 function buildYearForecastSheet(year){
   const yy = String(year).slice(2);
   const header = [
     {v:'State', s:XLSX_STYLE.HEADER}, {v:'Job Name', s:XLSX_STYLE.HEADER}, {v:'Builder', s:XLSX_STYLE.HEADER},
-    {v:'Confidence', s:XLSX_STYLE.HEADER}, {v:'Contract Value', s:XLSX_STYLE.HEADER},
+    {v:'Type', s:XLSX_STYLE.HEADER}, {v:'Confidence', s:XLSX_STYLE.HEADER}, {v:'Contract Value', s:XLSX_STYLE.HEADER},
   ].concat(FORECAST_MONTH_LABELS.map(m => ({v: m + '-' + yy, s:XLSX_STYLE.HEADER})))
    .concat([{v:'FY' + yy + ' Total', s:XLSX_STYLE.HEADER}]);
   const rows = [header];
@@ -5552,14 +5540,28 @@ function buildYearForecastSheet(year){
     cells.forEach((c,i) => { monthTotals[i] += c.total; });
     grandTotal += fyTotal;
     rows.push([
-      j.state||'', j.jobName||'', j.builder||'', j.probBand||'', j.contractValue||0,
+      j.state||'', j.jobName||'', j.builder||'', j.jobType||'', j.probBand||'', j.contractValue||0,
     ].concat(cells.map(c => ({v: c.total, s: c.style}))).concat([fyTotal]));
+
+    (j.variations||[]).forEach(v => {
+      if(v.status !== 'Approved' || !v.month || v.month.indexOf(year + '-') !== 0) return;
+      const mkOfVar = v.month.slice(String(year).length + 1);
+      const mi = FORECAST_MONTH_KEYS.indexOf(mkOfVar);
+      if(mi === -1) return;
+      const amt = Math.round((v.amount||0) * 100) / 100;
+      const invoiced = Math.min(sumLog(v.invoiceLog), v.amount||0);
+      const style = invoiced > 0 ? XLSX_STYLE.GREEN : XLSX_STYLE.BLUE;
+      const varCells = FORECAST_MONTH_KEYS.map((mk,i) => i === mi ? {v:amt, s:style} : null);
+      monthTotals[mi] += amt;
+      grandTotal += amt;
+      rows.push([
+        '', '   ↳ Variation: ' + (v.description||''), '', '', '', '',
+      ].concat(varCells).concat([{v:amt, s:style}]));
+    });
   });
-  const totalRow = [
-    {v:'', s:XLSX_STYLE.HEADER}, {v:'TOTAL', s:XLSX_STYLE.HEADER}, {v:'', s:XLSX_STYLE.HEADER},
-    {v:'', s:XLSX_STYLE.HEADER}, {v:'', s:XLSX_STYLE.HEADER},
-  ].concat(monthTotals.map(t => ({v: Math.round(t*100)/100, s:XLSX_STYLE.HEADER})))
-   .concat([{v: Math.round(grandTotal*100)/100, s:XLSX_STYLE.HEADER}]);
+  const totalRow = new Array(FORECAST_LEAD_COLS).fill(null).map((_, i) => i === 1 ? {v:'TOTAL', s:XLSX_STYLE.HEADER} : {v:'', s:XLSX_STYLE.HEADER})
+    .concat(monthTotals.map(t => ({v: Math.round(t*100)/100, s:XLSX_STYLE.HEADER})))
+    .concat([{v: Math.round(grandTotal*100)/100, s:XLSX_STYLE.HEADER}]);
   rows.push(totalRow);
   return rows;
 }
