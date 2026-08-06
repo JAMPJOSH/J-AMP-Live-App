@@ -5420,8 +5420,8 @@ function colLetter(idx){
   }
   return s;
 }
-const XLSX_STYLE = {DEFAULT:0, GREEN:1, BLUE:2, YELLOW:3, HEADER:4, BOLD:5, GREEN_HEADER:6, BLUE_HEADER:7, YELLOW_HEADER:8};
-const XLSX_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFC6EFCE"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFBDD7EE"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9D9D9"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="9"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="1" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="4" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="1" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFill="1" applyFont="1"/></cellXfs></styleSheet>`;
+const XLSX_STYLE = {DEFAULT:0, GREEN:1, BLUE:2, YELLOW:3, HEADER:4, BOLD:5, GREEN_HEADER:6, BLUE_HEADER:7, YELLOW_HEADER:8, BLACK:9};
+const XLSX_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="6"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFC6EFCE"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFBDD7EE"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9D9D9"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF000000"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="10"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="1" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="4" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="1" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="0" fillId="5" borderId="0" xfId="0" applyFill="1"/></cellXfs></styleSheet>`;
 function sheetXml(rows, hasDrawing){
   const rowsXml = rows.map((row, ri) => {
     const r = ri + 1;
@@ -5483,13 +5483,14 @@ function buildWorkbookXlsx(sheets, logoBytes){
 }
 function withLetterhead(title, rows){
   const stamp = new Date().toISOString().slice(0,10);
-  const blank = [];
+  const blk = {v:'', s:XLSX_STYLE.BLACK};
+  const blackRow = [blk, blk];
   return [
-    blank, blank,
-    [null, null, null, {v:'J-AMP GROUP', s:XLSX_STYLE.BOLD}],
-    [null, null, null, title],
-    [null, null, null, 'Generated ' + stamp + ' — all figures ex GST'],
-    blank,
+    blackRow, blackRow,
+    [blk, blk, null, {v:'J-AMP GROUP', s:XLSX_STYLE.BOLD}],
+    [blk, blk, null, title],
+    [blk, blk, null, 'Generated ' + stamp + ' — all figures ex GST'],
+    blackRow,
   ].concat(rows);
 }
 function monthlyInvoicedTotal(year, mk){
@@ -5530,6 +5531,7 @@ function forecastCellStyle(job, year, mk){
   }
   return {total, style};
 }
+const FORECAST_BAND_ORDER = ['Confirmed (>90%)', 'Possible (50-89%)', 'Unlikely (<50%)'];
 function buildYearForecastSheet(year){
   const yy = String(year).slice(2);
   const header = [
@@ -5538,13 +5540,27 @@ function buildYearForecastSheet(year){
   ].concat(FORECAST_MONTH_LABELS.map(m => ({v: m + '-' + yy, s:XLSX_STYLE.HEADER})))
    .concat([{v:'FY' + yy + ' Total', s:XLSX_STYLE.HEADER}]);
   const rows = [header];
-  jobs.forEach(j => {
+  const sortedJobs = jobs.slice().sort((a, b) => {
+    const ra = FORECAST_BAND_ORDER.indexOf(a.probBand); const rb = FORECAST_BAND_ORDER.indexOf(b.probBand);
+    return (ra === -1 ? 99 : ra) - (rb === -1 ? 99 : rb);
+  });
+  const monthTotals = FORECAST_MONTH_KEYS.map(() => 0);
+  let grandTotal = 0;
+  sortedJobs.forEach(j => {
     const cells = FORECAST_MONTH_KEYS.map(mk => forecastCellStyle(j, year, mk));
     const fyTotal = Math.round(cells.reduce((s,c) => s + c.total, 0) * 100) / 100;
+    cells.forEach((c,i) => { monthTotals[i] += c.total; });
+    grandTotal += fyTotal;
     rows.push([
       j.state||'', j.jobName||'', j.builder||'', j.probBand||'', j.contractValue||0,
     ].concat(cells.map(c => ({v: c.total, s: c.style}))).concat([fyTotal]));
   });
+  const totalRow = [
+    {v:'', s:XLSX_STYLE.HEADER}, {v:'TOTAL', s:XLSX_STYLE.HEADER}, {v:'', s:XLSX_STYLE.HEADER},
+    {v:'', s:XLSX_STYLE.HEADER}, {v:'', s:XLSX_STYLE.HEADER},
+  ].concat(monthTotals.map(t => ({v: Math.round(t*100)/100, s:XLSX_STYLE.HEADER})))
+   .concat([{v: Math.round(grandTotal*100)/100, s:XLSX_STYLE.HEADER}]);
+  rows.push(totalRow);
   return rows;
 }
 async function saveBinaryFile(filename, bytes, mimeType){
