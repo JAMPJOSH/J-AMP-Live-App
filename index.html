@@ -4524,6 +4524,8 @@ function variationRowHtml(j, v){
   const descCell = READ_ONLY ? escapeHtml(v.description||'—') : `<input type="text" class="var-desc" data-id="${j.id}" data-varid="${v.id}" value="${escapeHtml(v.description||'')}" placeholder="Describe the variation" style="width:100%;min-width:180px;"/>`;
   const statusCell = READ_ONLY ? v.status : `<select class="var-status" data-id="${j.id}" data-varid="${v.id}">${statusOptions.map(o=>`<option value="${o}" ${o===v.status?'selected':''}>${o}</option>`).join('')}</select>`;
   const monthCell = READ_ONLY ? (STAGE_MONTH_OPTIONS.find(o=>o.value===v.month)||{}).label||'—' : monthSelectHtml('var-month', `data-id="${j.id}" data-varid="${v.id}"`, v.month);
+  const canSplit = !READ_ONLY && inv > 0 && inv < amt;
+  const splitCell = canSplit ? `<button type="button" class="btn ghost icon small split-var-btn" data-id="${j.id}" data-varid="${v.id}" title="Move the un-invoiced remainder into a new line for another month">&#8594;</button>` : '';
   const removeCell = READ_ONLY ? '' : `<button type="button" class="btn ghost icon small remove-var-btn" data-id="${j.id}" data-varid="${v.id}">&times;</button>`;
   return `<tr data-var-id="${v.id}" class="${rowClass}">
     <td class="wrap">${descCell}</td>
@@ -4531,7 +4533,7 @@ function variationRowHtml(j, v){
     <td>${statusCell}</td>
     <td>${monthCell}</td>
     <td>${invoiceLogHtml('variation', j.id, v.id, v.invoiceLog, amt)}</td>
-    <td>${removeCell}</td>
+    <td><div class="row-actions">${splitCell}${removeCell}</div></td>
   </tr>`;
 }
 
@@ -5116,6 +5118,23 @@ document.getElementById('jobBody').addEventListener('click', e => {
     if(j){
       j.variations = (j.variations||[]).filter(v => v.id !== removeVarBtn.dataset.varid);
       saveState(); renderAll();
+    }
+    return;
+  }
+  const splitVarBtn = e.target.closest('.split-var-btn');
+  if(splitVarBtn){
+    const j = jobs.find(x => x.id === splitVarBtn.dataset.id);
+    if(j){
+      const v = (j.variations||[]).find(x => x.id === splitVarBtn.dataset.varid);
+      if(v){
+        const invoiced = Math.min(sumLog(v.invoiceLog), v.amount||0);
+        const remaining = (v.amount||0) - invoiced;
+        if(remaining > 0){
+          v.amount = invoiced;
+          j.variations.push({id: uid('v'), description: v.description, amount: remaining, status: v.status, month: v.month, invoiceLog: []});
+          saveState(); renderAll();
+        }
+      }
     }
     return;
   }
