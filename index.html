@@ -4414,10 +4414,17 @@ function jobChipDefs(){
     {key:'Unlikely (<50%)', label:'Unlikely'},
   ];
 }
+function jobsForChip(key){
+  const base = jobs.filter(j => jobViewMode === 'complete' ? j.complete : !j.complete);
+  if(key === 'all') return base;
+  return base.filter(j => j.probBand === key);
+}
 function renderJobChips(){
-  document.getElementById('jobChips').innerHTML = jobChipDefs().map(c =>
-    `<button type="button" class="chip ${jobFilter.band===c.key?'active':''}" data-band="${c.key}">${c.label}</button>`
-  ).join('');
+  document.getElementById('jobChips').innerHTML = jobChipDefs().map(c => {
+    const list = jobsForChip(c.key);
+    const sum = list.reduce((s,j) => s + (j.contractValue||0), 0);
+    return `<button type="button" class="chip ${jobFilter.band===c.key?'active':''}" data-band="${c.key}">${c.label} <span class="count">${list.length}</span><span class="chip-amount">${fmtMoney(sum)}</span></button>`;
+  }).join('');
 }
 function filteredJobs(){
   let list = jobs.filter(j => jobViewMode === 'complete' ? j.complete : !j.complete);
@@ -4858,6 +4865,7 @@ document.querySelectorAll('.subtab').forEach(tab => {
     document.querySelectorAll('.subtab').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
     jobViewMode = tab.dataset.jobview;
+    renderJobChips();
     renderJobTable();
   });
 });
