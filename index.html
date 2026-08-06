@@ -5548,15 +5548,14 @@ function buildYearForecastSheet(year){
       const mkOfVar = v.month.slice(String(year).length + 1);
       const mi = FORECAST_MONTH_KEYS.indexOf(mkOfVar);
       if(mi === -1) return;
-      const amt = Math.round((v.amount||0) * 100) / 100;
-      const invoiced = Math.min(sumLog(v.invoiceLog), v.amount||0);
-      const style = invoiced > 0 ? XLSX_STYLE.GREEN : XLSX_STYLE.BLUE;
-      const varCells = FORECAST_MONTH_KEYS.map((mk,i) => i === mi ? {v:amt, s:style} : null);
-      monthTotals[mi] += amt;
-      grandTotal += amt;
+      const invoiced = Math.round(Math.min(sumLog(v.invoiceLog), v.amount||0) * 100) / 100;
+      const style = invoiced > 0 ? XLSX_STYLE.BLUE : XLSX_STYLE.DEFAULT;
+      const varCells = FORECAST_MONTH_KEYS.map((mk,i) => i === mi ? {v:invoiced, s:style} : null);
+      monthTotals[mi] += invoiced;
+      grandTotal += invoiced;
       rows.push([
         '', '   ↳ Variation: ' + (v.description||''), '', '', '', '',
-      ].concat(varCells).concat([{v:amt, s:style}]));
+      ].concat(varCells).concat([{v:invoiced, s:style}]));
     });
   });
   const totalRow = new Array(FORECAST_LEAD_COLS).fill(null).map((_, i) => i === 1 ? {v:'TOTAL', s:XLSX_STYLE.HEADER} : {v:'', s:XLSX_STYLE.HEADER})
