@@ -4705,7 +4705,7 @@ function computeMonthlyForecast(year){
       row.total += base - creditNet;
 
       let varNet = 0;
-      (j.variations||[]).forEach(v => { if(v.status === 'Approved' && v.month === key) varNet += (v.amount||0); });
+      (j.variations||[]).forEach(v => { if(v.status === 'Approved' && v.month === key) varNet += Math.min(sumLog(v.invoiceLog), v.amount||0); });
       row['Variations'] += varNet;
       row.total += varNet;
     });
@@ -5519,7 +5519,13 @@ function forecastCellStyle(job, year, mk){
   return {total, style};
 }
 const FORECAST_BAND_ORDER = ['Confirmed (>90%)', 'Possible (50-89%)', 'Unlikely (<50%)'];
+const FORECAST_BAND_SHORT_LABEL = {'Confirmed (>90%)':'Confirmed', 'Possible (50-89%)':'Possible', 'Unlikely (<50%)':'Unlikely'};
 const FORECAST_LEAD_COLS = 6;
+function forecastSummaryRow(label, monthTotals, fyTotal){
+  return new Array(FORECAST_LEAD_COLS).fill(null).map((_, i) => i === 1 ? {v:label, s:XLSX_STYLE.HEADER} : {v:'', s:XLSX_STYLE.HEADER})
+    .concat(monthTotals.map(t => ({v: Math.round(t*100)/100, s:XLSX_STYLE.HEADER})))
+    .concat([{v: Math.round(fyTotal*100)/100, s:XLSX_STYLE.HEADER}]);
+}
 function buildYearForecastSheet(year){
   const yy = String(year).slice(2);
   const header = [
@@ -5528,40 +5534,46 @@ function buildYearForecastSheet(year){
   ].concat(FORECAST_MONTH_LABELS.map(m => ({v: m + '-' + yy, s:XLSX_STYLE.HEADER})))
    .concat([{v:'FY' + yy + ' Total', s:XLSX_STYLE.HEADER}]);
   const rows = [header];
-  const sortedJobs = jobs.slice().sort((a, b) => {
-    const ra = FORECAST_BAND_ORDER.indexOf(a.probBand); const rb = FORECAST_BAND_ORDER.indexOf(b.probBand);
-    return (ra === -1 ? 99 : ra) - (rb === -1 ? 99 : rb);
-  });
+  const bandGroups = FORECAST_BAND_ORDER.map(band => ({band, jobs: jobs.filter(j => j.probBand === band)}));
+  const unbanded = jobs.filter(j => FORECAST_BAND_ORDER.indexOf(j.probBand) === -1);
+  if(unbanded.length) bandGroups.push({band: null, jobs: unbanded});
+
   const monthTotals = FORECAST_MONTH_KEYS.map(() => 0);
   let grandTotal = 0;
-  sortedJobs.forEach(j => {
-    const cells = FORECAST_MONTH_KEYS.map(mk => forecastCellStyle(j, year, mk));
-    const fyTotal = Math.round(cells.reduce((s,c) => s + c.total, 0) * 100) / 100;
-    cells.forEach((c,i) => { monthTotals[i] += c.total; });
-    grandTotal += fyTotal;
-    rows.push([
-      j.state||'', j.jobName||'', j.builder||'', j.jobType||'', j.probBand||'', j.contractValue||0,
-    ].concat(cells.map(c => ({v: c.total, s: c.style}))).concat([fyTotal]));
-
-    (j.variations||[]).forEach(v => {
-      if(v.status !== 'Approved' || !v.month || v.month.indexOf(year + '-') !== 0) return;
-      const mkOfVar = v.month.slice(String(year).length + 1);
-      const mi = FORECAST_MONTH_KEYS.indexOf(mkOfVar);
-      if(mi === -1) return;
-      const invoiced = Math.round(Math.min(sumLog(v.invoiceLog), v.amount||0) * 100) / 100;
-      const style = invoiced > 0 ? XLSX_STYLE.BLUE : XLSX_STYLE.DEFAULT;
-      const varCells = FORECAST_MONTH_KEYS.map((mk,i) => i === mi ? {v:invoiced, s:style} : null);
-      monthTotals[mi] += invoiced;
-      grandTotal += invoiced;
+  bandGroups.forEach(group => {
+    if(!group.jobs.length) return;
+    const bandMonthTotals = FORECAST_MONTH_KEYS.map(() => 0);
+    let bandTotal = 0;
+    group.jobs.forEach(j => {
+      const cells = FORECAST_MONTH_KEYS.map(mk => forecastCellStyle(j, year, mk));
+      const fyTotal = Math.round(cells.reduce((s,c) => s + c.total, 0) * 100) / 100;
+      cells.forEach((c,i) => { bandMonthTotals[i] += c.total; });
+      bandTotal += fyTotal;
       rows.push([
-        '', '   ↳ Variation: ' + (v.description||''), '', '', '', '',
-      ].concat(varCells).concat([{v:invoiced, s:style}]));
+        j.state||'', j.jobName||'', j.builder||'', j.jobType||'', j.probBand||'', j.contractValue||0,
+      ].concat(cells.map(c => ({v: c.total, s: c.style}))).concat([fyTotal]));
+
+      (j.variations||[]).forEach(v => {
+        if(v.status !== 'Approved' || !v.month || v.month.indexOf(year + '-') !== 0) return;
+        const mkOfVar = v.month.slice(String(year).length + 1);
+        const mi = FORECAST_MONTH_KEYS.indexOf(mkOfVar);
+        if(mi === -1) return;
+        const invoiced = Math.round(Math.min(sumLog(v.invoiceLog), v.amount||0) * 100) / 100;
+        const style = invoiced > 0 ? XLSX_STYLE.BLUE : XLSX_STYLE.DEFAULT;
+        const varCells = FORECAST_MONTH_KEYS.map((mk,i) => i === mi ? {v:invoiced, s:style} : null);
+        bandMonthTotals[mi] += invoiced;
+        bandTotal += invoiced;
+        rows.push([
+          '', '   ↳ Variation: ' + (v.description||''), '', '', '', '',
+        ].concat(varCells).concat([{v:invoiced, s:style}]));
+      });
     });
+    bandMonthTotals.forEach((t,i) => { monthTotals[i] += t; });
+    grandTotal += bandTotal;
+    const label = (FORECAST_BAND_SHORT_LABEL[group.band] || 'Other') + ' Total';
+    rows.push(forecastSummaryRow(label, bandMonthTotals, bandTotal));
   });
-  const totalRow = new Array(FORECAST_LEAD_COLS).fill(null).map((_, i) => i === 1 ? {v:'TOTAL', s:XLSX_STYLE.HEADER} : {v:'', s:XLSX_STYLE.HEADER})
-    .concat(monthTotals.map(t => ({v: Math.round(t*100)/100, s:XLSX_STYLE.HEADER})))
-    .concat([{v: Math.round(grandTotal*100)/100, s:XLSX_STYLE.HEADER}]);
-  rows.push(totalRow);
+  rows.push(forecastSummaryRow('TOTAL', monthTotals, grandTotal));
   return rows;
 }
 async function saveBinaryFile(filename, bytes, mimeType){
