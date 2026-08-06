@@ -138,6 +138,9 @@
     padding:6px 11px; border-radius:20px; border:1px solid var(--edge); background:var(--void); color:var(--text-dim); cursor:pointer;
   }
   .chip.active{ background:var(--red-dim); color:var(--text); border-color:var(--red); }
+  .chip .count{ color:var(--red-2); }
+  .chip .chip-amount{ color:var(--text-faint); margin-left:4px; }
+  .chip.active .chip-amount{ color:var(--text-dim); }
   .search-input{
     font-family:var(--font-mono); font-size:.78rem; background:var(--void); border:1px solid var(--edge); color:var(--text);
     padding:8px 12px; border-radius:3px; flex:1; min-width:160px;
@@ -4204,9 +4207,10 @@ function renderGauges(){
   const pipelineValue = pendingTenders.reduce((s,t) => s + (t.tenderSum || 0), 0);
   const maxPipelineRef = 3000000;
 
-  const jobsTotal = jobs.reduce((s,j) => s + (j.contractValue || 0), 0);
-  const likelyTotal = jobs.filter(j => j.probBand === 'Likely (>90%)').reduce((s,j) => s + (j.contractValue || 0), 0);
-  const likelyShare = jobsTotal ? likelyTotal / jobsTotal : 0;
+  const likelyJobs = jobs.filter(j => j.probBand === 'Likely (>90%)');
+  const likelyTotal = likelyJobs.reduce((s,j) => s + (j.contractValue || 0), 0);
+  const likelyInvoiced = likelyJobs.reduce((s,j) => s + computeJobInvoiceProgress(j).invoiced, 0);
+  const likelyInvoicedShare = likelyTotal ? likelyInvoiced / likelyTotal : 0;
 
   const overdueTenders = tenders.filter(t => t.status === 'Pending' && daysFromToday(t.dueDate) !== null && daysFromToday(t.dueDate) < 0);
   const soonTenders = tenders.filter(t => t.status === 'Pending' && daysFromToday(t.dueDate) !== null && daysFromToday(t.dueDate) >= 0 && daysFromToday(t.dueDate) <= 7);
@@ -4219,7 +4223,7 @@ function renderGauges(){
   document.getElementById('gaugeRow').innerHTML = [
     makeGauge('winrate', 'Win Rate', winRate, (winRate*100).toFixed(0)+'%', won.length+' / '+decided.length+' decided'),
     makeGauge('pipeline', 'Tender Pipeline', Math.min(1, pipelineValue/maxPipelineRef), fmtMoney(pipelineValue), pendingTenders.length+' pending'),
-    makeGauge('forecast', 'Contracted Value', likelyShare, fmtMoney(jobsTotal), (likelyShare*100).toFixed(0)+'% likely'),
+    makeGauge('forecast', 'Confirmed Contracted Value', likelyInvoicedShare, fmtMoney(likelyTotal), fmtMoney(likelyInvoiced)+' invoiced'),
     makeGauge('invoiced', 'Invoiced', invoicedShare, fmtMoney(invSummary.invoiced), fmtMoney(invSummary.outstanding)+' outstanding'),
     makeGauge('attention', 'Needs Attention', attentionPct, String(attentionCount), overdueTenders.length+' overdue'),
   ].join('');
@@ -4274,10 +4278,17 @@ function tenderChipDefs(){
     {key:'attention', label:'Attention'},
   ];
 }
+function tendersForChip(key){
+  if(key === 'all') return tenders;
+  if(key === 'attention') return tenders.filter(t => t.status==='Pending' && t.dueDate && daysFromToday(t.dueDate) <= 7);
+  return tenders.filter(t => t.status === key);
+}
 function renderTenderChips(){
-  document.getElementById('tenderChips').innerHTML = tenderChipDefs().map(c =>
-    `<button type="button" class="chip ${tenderFilter.status===c.key?'active':''}" data-status="${c.key}">${c.label}</button>`
-  ).join('');
+  document.getElementById('tenderChips').innerHTML = tenderChipDefs().map(c => {
+    const list = tendersForChip(c.key);
+    const sum = list.reduce((s,t) => s + (t.tenderSum||0), 0);
+    return `<button type="button" class="chip ${tenderFilter.status===c.key?'active':''}" data-status="${c.key}">${c.label} <span class="count">${list.length}</span><span class="chip-amount">${fmtMoney(sum)}</span></button>`;
+  }).join('');
 }
 
 function filteredTenders(){
