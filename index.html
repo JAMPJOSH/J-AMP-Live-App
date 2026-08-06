@@ -428,7 +428,9 @@
     <div id="footerNote">Baseline imported from J-AMP Tender &amp; Forecast Tracker (v3).xlsx. Edits save to this browser only &mdash; use Export/Import to sync with your estimator.</div>
     <div style="display:flex;gap:10px;align-items:center;" class="edit-only">
       <span id="syncStatus" class="job-meta" style="min-width:0;"></span>
+      <span id="excelExportStatus" class="job-meta" style="min-width:0;"></span>
       <input type="file" id="importFileInput" accept="application/json,.json" style="display:none;" />
+      <button class="btn ghost small" id="exportExcelBtn">Export to Excel</button>
       <button class="btn ghost small" id="importBtn">Import Snapshot</button>
       <button class="btn ghost small" id="exportBtn">Export Snapshot</button>
       <button class="btn ghost small" id="resetBtn">Restore baseline</button>
@@ -4210,7 +4212,13 @@ function renderGauges(){
 
   const likelyJobs = jobs.filter(j => j.probBand === 'Confirmed (>90%)');
   const likelyTotal = likelyJobs.reduce((s,j) => s + (j.contractValue || 0), 0);
-  const likelyInvoiced = likelyJobs.reduce((s,j) => s + computeJobInvoiceProgress(j).invoiced, 0);
+  const likelyInvoiced = likelyJobs.reduce((s,j) => {
+    let inv = computeJobInvoiceProgress(j).invoiced;
+    (j.variations||[]).forEach(v => {
+      if(v.status === 'Approved') inv += Math.min(sumLog(v.invoiceLog), v.amount||0);
+    });
+    return s + inv;
+  }, 0);
   const likelyInvoicedShare = likelyTotal ? likelyInvoiced / likelyTotal : 0;
 
   const overdueTenders = tenders.filter(t => t.status === 'Pending' && daysFromToday(t.dueDate) !== null && daysFromToday(t.dueDate) < 0);
@@ -5327,6 +5335,283 @@ document.getElementById('exportBtn').addEventListener('click', async () => {
   const data = JSON.stringify({tenders, jobs, exportedAt: new Date().toISOString()}, null, 2);
   const ok = await saveFile('jamp-ops-snapshot-' + stamp + '.json', data);
   if(ok) setSyncStatus('Exported. Send this file to sync with your estimator.');
+});
+
+/* ---------------- excel export (self-contained .xlsx writer, no libraries) ---------------- */
+function setExcelStatus(msg, isError){
+  const el = document.getElementById('excelExportStatus');
+  if(!el) return;
+  el.textContent = msg;
+  el.style.color = isError ? 'var(--bad)' : 'var(--good)';
+  setTimeout(() => { if(el.textContent === msg) el.textContent = ''; }, 6000);
+}
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for(let n=0;n<256;n++){
+    let c = n;
+    for(let k=0;k<8;k++){ c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); }
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes){
+  let crc = 0xFFFFFFFF;
+  for(let i=0;i<bytes.length;i++){
+    crc = CRC_TABLE[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+function strToBytes(str){ return new TextEncoder().encode(str); }
+function u16le(n){ return [n & 0xFF, (n>>>8)&0xFF]; }
+function u32le(n){ return [n&0xFF, (n>>>8)&0xFF, (n>>>16)&0xFF, (n>>>24)&0xFF]; }
+function buildZip(files){
+  const chunks = [];
+  let offset = 0;
+  function push(arr){ chunks.push(arr); offset += arr.length; }
+  const records = [];
+  files.forEach(f => {
+    const nameBytes = strToBytes(f.name);
+    const data = f.data;
+    const crc = crc32(data);
+    const localOffset = offset;
+    push(new Uint8Array([
+      0x50,0x4b,0x03,0x04,
+      ...u16le(20), ...u16le(0), ...u16le(0),
+      ...u16le(0), ...u16le(0),
+      ...u32le(crc), ...u32le(data.length), ...u32le(data.length),
+      ...u16le(nameBytes.length), ...u16le(0),
+    ]));
+    push(nameBytes);
+    push(data);
+    records.push({nameBytes, crc, size: data.length, localOffset});
+  });
+  const centralStart = offset;
+  records.forEach(fr => {
+    push(new Uint8Array([
+      0x50,0x4b,0x01,0x02,
+      ...u16le(20), ...u16le(20), ...u16le(0),
+      ...u16le(0), ...u16le(0), ...u16le(0),
+      ...u32le(fr.crc), ...u32le(fr.size), ...u32le(fr.size),
+      ...u16le(fr.nameBytes.length), ...u16le(0), ...u16le(0),
+      ...u16le(0), ...u16le(0), ...u32le(0), ...u32le(fr.localOffset),
+    ]));
+    push(fr.nameBytes);
+  });
+  const centralSize = offset - centralStart;
+  push(new Uint8Array([
+    0x50,0x4b,0x05,0x06,
+    ...u16le(0), ...u16le(0),
+    ...u16le(records.length), ...u16le(records.length),
+    ...u32le(centralSize), ...u32le(centralStart), ...u16le(0),
+  ]));
+  const total = chunks.reduce((s,c)=>s+c.length,0);
+  const out = new Uint8Array(total);
+  let p = 0;
+  chunks.forEach(c => { out.set(c, p); p += c.length; });
+  return out;
+}
+function xmlEsc(s){ return String(s).replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m])); }
+function colLetter(idx){
+  let s = '', n = idx + 1;
+  while(n > 0){
+    const rem = (n - 1) % 26;
+    s = String.fromCharCode(65 + rem) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+const XLSX_STYLE = {DEFAULT:0, GREEN:1, BLUE:2, YELLOW:3, HEADER:4, BOLD:5, GREEN_HEADER:6, BLUE_HEADER:7, YELLOW_HEADER:8};
+const XLSX_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="5"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFC6EFCE"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFBDD7EE"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9D9D9"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="9"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="1" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="4" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="1" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFill="1" applyFont="1"/></cellXfs></styleSheet>`;
+function sheetXml(rows, hasDrawing){
+  const rowsXml = rows.map((row, ri) => {
+    const r = ri + 1;
+    const cells = row.map((cell, ci) => {
+      const ref = colLetter(ci) + r;
+      let val = cell, style = 0;
+      if(cell !== null && typeof cell === 'object' && Object.prototype.hasOwnProperty.call(cell, 'v')){ val = cell.v; style = cell.s || 0; }
+      const sAttr = style ? ` s="${style}"` : '';
+      if(val === null || val === undefined || val === '') return `<c r="${ref}"${sAttr}/>`;
+      if(typeof val === 'number' && isFinite(val)) return `<c r="${ref}"${sAttr}><v>${val}</v></c>`;
+      return `<c r="${ref}"${sAttr} t="inlineStr"><is><t xml:space="preserve">${xmlEsc(String(val))}</t></is></c>`;
+    }).join('');
+    return `<row r="${r}">${cells}</row>`;
+  }).join('');
+  const drawingTag = hasDrawing ? '<drawing r:id="rId1"/>' : '';
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetData>${rowsXml}</sheetData>${drawingTag}</worksheet>`;
+}
+function buildDrawingXml(){
+  const cx = 1200000, cy = 854000;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><xdr:oneCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="${cx}" cy="${cy}"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="1" name="Logo"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="rId1"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor></xdr:wsDr>`;
+}
+function dataUriToBytes(dataUri){
+  const base64 = dataUri.split(',')[1];
+  const binStr = atob(base64);
+  const bytes = new Uint8Array(binStr.length);
+  for(let i=0;i<binStr.length;i++) bytes[i] = binStr.charCodeAt(i);
+  return bytes;
+}
+function buildWorkbookXlsx(sheets, logoBytes){
+  const hasLogo = !!logoBytes;
+  const overrides = sheets.map((s,i) => `<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('');
+  const drawingOverrides = hasLogo ? sheets.map((s,i) => `<Override PartName="/xl/drawings/drawing${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>`).join('') : '';
+  const pngDefault = hasLogo ? '<Default Extension="png" ContentType="image/png"/>' : '';
+  const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>${pngDefault}<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${overrides}${drawingOverrides}</Types>`;
+  const rootRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
+  const sheetEntries = sheets.map((s,i) => `<sheet name="${xmlEsc(s.name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('');
+  const workbookXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheetEntries}</sheets></workbook>`;
+  const workbookRelsEntries = sheets.map((s,i) => `<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('');
+  const stylesRelId = 'rId' + (sheets.length + 1);
+  const workbookRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${workbookRelsEntries}<Relationship Id="${stylesRelId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+  const files = [
+    {name:'[Content_Types].xml', data: strToBytes(contentTypes)},
+    {name:'_rels/.rels', data: strToBytes(rootRels)},
+    {name:'xl/workbook.xml', data: strToBytes(workbookXml)},
+    {name:'xl/_rels/workbook.xml.rels', data: strToBytes(workbookRels)},
+    {name:'xl/styles.xml', data: strToBytes(XLSX_STYLES_XML)},
+  ];
+  sheets.forEach((s,i) => { files.push({name:`xl/worksheets/sheet${i+1}.xml`, data: strToBytes(sheetXml(s.rows, hasLogo))}); });
+  if(hasLogo){
+    files.push({name:'xl/media/image1.png', data: logoBytes});
+    sheets.forEach((s,i) => {
+      const n = i+1;
+      files.push({name:`xl/worksheets/_rels/sheet${n}.xml.rels`, data: strToBytes(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${n}.xml"/></Relationships>`)});
+      files.push({name:`xl/drawings/drawing${n}.xml`, data: strToBytes(buildDrawingXml())});
+      files.push({name:`xl/drawings/_rels/drawing${n}.xml.rels`, data: strToBytes(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/></Relationships>`)});
+    });
+  }
+  return buildZip(files);
+}
+function withLetterhead(title, rows){
+  const stamp = new Date().toISOString().slice(0,10);
+  const blank = [];
+  return [
+    blank, blank,
+    [null, null, null, {v:'J-AMP GROUP', s:XLSX_STYLE.BOLD}],
+    [null, null, null, title],
+    [null, null, null, 'Generated ' + stamp + ' — all figures ex GST'],
+    blank,
+  ].concat(rows);
+}
+function monthlyInvoicedTotal(year, mk){
+  const field = commercialFieldFor(year, mk);
+  const key = year + '-' + mk;
+  let invoiced = 0;
+  jobs.forEach(j => {
+    const val = j[field] || 0;
+    invoiced += Math.min(sumLog(j.monthInvoiceLog && j.monthInvoiceLog[field]), val);
+    (j.variations||[]).forEach(v => {
+      if(v.status === 'Approved' && v.month === key) invoiced += Math.min(sumLog(v.invoiceLog), v.amount||0);
+    });
+  });
+  return invoiced;
+}
+function forecastCellStyle(job, year, mk){
+  const field = commercialFieldFor(year, mk);
+  const key = year + '-' + mk;
+  const baseAmt = job[field] || 0;
+  let variationAmt = 0, variationInvoiced = 0, hasVariation = false;
+  (job.variations||[]).forEach(v => {
+    if(v.status === 'Approved' && v.month === key){
+      variationAmt += (v.amount||0);
+      variationInvoiced += Math.min(sumLog(v.invoiceLog), v.amount||0);
+      hasVariation = true;
+    }
+  });
+  let creditAmt = 0;
+  (job.credits||[]).forEach(c => { if(c.status === 'Approved' && c.month === key) creditAmt += (c.amount||0); });
+  const total = Math.round((baseAmt + variationAmt - creditAmt) * 100) / 100;
+  const baseInvoiced = Math.min(sumLog(job.monthInvoiceLog && job.monthInvoiceLog[field]), baseAmt);
+  const invoiced = baseInvoiced + variationInvoiced;
+  let style = XLSX_STYLE.DEFAULT;
+  if(total > 0){
+    if(hasVariation) style = XLSX_STYLE.BLUE;
+    else if(invoiced >= total) style = XLSX_STYLE.GREEN;
+    else style = XLSX_STYLE.YELLOW;
+  }
+  return {total, style};
+}
+function buildYearForecastSheet(year){
+  const yy = String(year).slice(2);
+  const header = [
+    {v:'State', s:XLSX_STYLE.HEADER}, {v:'Job Name', s:XLSX_STYLE.HEADER}, {v:'Builder', s:XLSX_STYLE.HEADER},
+    {v:'Confidence', s:XLSX_STYLE.HEADER}, {v:'Contract Value', s:XLSX_STYLE.HEADER},
+  ].concat(FORECAST_MONTH_LABELS.map(m => ({v: m + '-' + yy, s:XLSX_STYLE.HEADER})))
+   .concat([{v:'FY' + yy + ' Total', s:XLSX_STYLE.HEADER}]);
+  const rows = [header];
+  jobs.forEach(j => {
+    const cells = FORECAST_MONTH_KEYS.map(mk => forecastCellStyle(j, year, mk));
+    const fyTotal = Math.round(cells.reduce((s,c) => s + c.total, 0) * 100) / 100;
+    rows.push([
+      j.state||'', j.jobName||'', j.builder||'', j.probBand||'', j.contractValue||0,
+    ].concat(cells.map(c => ({v: c.total, s: c.style}))).concat([fyTotal]));
+  });
+  return rows;
+}
+async function saveBinaryFile(filename, bytes, mimeType){
+  const blob = new Blob([bytes], {type: mimeType});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+function buildExcelExport(){
+  const sheets = [];
+  const logoImg = document.querySelector('.brand-logo');
+  const logoBytes = (logoImg && logoImg.src && logoImg.src.indexOf('data:image') === 0) ? dataUriToBytes(logoImg.src) : null;
+
+  sheets.push({name:'FY26 Forecast', rows: withLetterhead('FY26 Monthly Forecast — by Project', buildYearForecastSheet(2026))});
+  sheets.push({name:'FY27 Forecast', rows: withLetterhead('FY27 Monthly Forecast — by Project', buildYearForecastSheet(2027))});
+
+  const jobHeader = [
+    {v:'Job', s:XLSX_STYLE.HEADER}, {v:'Builder', s:XLSX_STYLE.HEADER}, {v:'State', s:XLSX_STYLE.HEADER},
+    {v:'Contract Value', s:XLSX_STYLE.HEADER}, {v:'Confidence', s:XLSX_STYLE.HEADER}, {v:'Type', s:XLSX_STYLE.HEADER},
+    {v:'Invoiced', s:XLSX_STYLE.GREEN_HEADER}, {v:'Remaining (Yet To Invoice)', s:XLSX_STYLE.YELLOW_HEADER}, {v:'Complete', s:XLSX_STYLE.HEADER},
+  ];
+  const jobRows = [jobHeader];
+  jobs.forEach(j => {
+    const p = computeJobInvoiceProgress(j);
+    jobRows.push([
+      j.jobName||'', j.builder||'', j.state||'', j.contractValue||0, j.probBand||'', j.jobType||'',
+      {v: Math.round(p.invoiced*100)/100, s:XLSX_STYLE.GREEN},
+      {v: Math.round(p.remaining*100)/100, s:XLSX_STYLE.YELLOW},
+      j.complete ? 'Yes' : 'No',
+    ]);
+  });
+  sheets.push({name:'Jobs', rows: withLetterhead('Live Projects', jobRows)});
+
+  const varHeader = [
+    {v:'Job', s:XLSX_STYLE.BLUE_HEADER}, {v:'Description', s:XLSX_STYLE.BLUE_HEADER}, {v:'Amount', s:XLSX_STYLE.BLUE_HEADER},
+    {v:'Status', s:XLSX_STYLE.BLUE_HEADER}, {v:'Month', s:XLSX_STYLE.BLUE_HEADER}, {v:'Invoiced So Far', s:XLSX_STYLE.GREEN_HEADER},
+  ];
+  const varRows = [varHeader];
+  jobs.forEach(j => {
+    (j.variations||[]).forEach(v => {
+      varRows.push([j.jobName||'', v.description||'', v.amount||0, v.status||'', v.month||'', {v: Math.round(sumLog(v.invoiceLog)*100)/100, s:XLSX_STYLE.GREEN}]);
+    });
+  });
+  sheets.push({name:'Variations', rows: withLetterhead('Variations', varRows)});
+
+  const creditHeader = ['Job','Description','Amount','Status','Month'].map(h => ({v:h, s:XLSX_STYLE.HEADER}));
+  const creditRows = [creditHeader];
+  jobs.forEach(j => {
+    (j.credits||[]).forEach(c => {
+      creditRows.push([j.jobName||'', c.description||'', c.amount||0, c.status||'', c.month||'']);
+    });
+  });
+  sheets.push({name:'Credits', rows: withLetterhead('Credits', creditRows)});
+
+  return buildWorkbookXlsx(sheets, logoBytes);
+}
+document.getElementById('exportExcelBtn').addEventListener('click', async () => {
+  try {
+    const bytes = buildExcelExport();
+    const stamp = new Date().toISOString().slice(0,10);
+    await saveBinaryFile('jamp-ops-export-' + stamp + '.xlsx', bytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    setExcelStatus('Exported to Excel.');
+  } catch(e){
+    setExcelStatus('Excel export failed: ' + e.message, true);
+  }
 });
 
 document.getElementById('importBtn').addEventListener('click', () => {
