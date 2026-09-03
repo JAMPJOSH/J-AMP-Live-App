@@ -4700,10 +4700,8 @@ function computeMonthlyForecast(year){
     jobs.forEach(j => {
       const band = FORECAST_BANDS.some(b => b.key === j.probBand) ? j.probBand : 'Unlikely (<50%)';
       const base = j[commercialFieldFor(year, mk)] || 0;
-      let creditNet = 0;
-      (j.credits||[]).forEach(c => { if(c.status === 'Approved' && c.month === key) creditNet += (c.amount||0); });
-      row[band] += base - creditNet;
-      row.total += base - creditNet;
+      row[band] += base;
+      row.total += base;
 
       let varNet = 0;
       (j.variations||[]).forEach(v => { if(v.month === key && (v.status === 'Approved' || sumLog(v.invoiceLog) > 0)) varNet += Math.min(sumLog(v.invoiceLog), v.amount||0); });
@@ -4964,7 +4962,6 @@ function jobMonthlyAmount(job, year, mk){
   const key = year + '-' + mk;
   let total = job[commercialFieldFor(year, mk)] || 0;
   (job.variations||[]).forEach(v => { if(v.status === 'Approved' && v.month === key) total += (v.amount||0); });
-  (job.credits||[]).forEach(c => { if(c.status === 'Approved' && c.month === key) total -= (c.amount||0); });
   return total;
 }
 function monthlyForJobYear(job, year){
@@ -5510,11 +5507,8 @@ function monthlyInvoicedTotal(year, mk){
 }
 function forecastCellStyle(job, year, mk){
   const field = commercialFieldFor(year, mk);
-  const key = year + '-' + mk;
   const baseAmt = job[field] || 0;
-  let creditAmt = 0;
-  (job.credits||[]).forEach(c => { if(c.status === 'Approved' && c.month === key) creditAmt += (c.amount||0); });
-  const total = Math.round((baseAmt - creditAmt) * 100) / 100;
+  const total = Math.round(baseAmt * 100) / 100;
   const invoiced = Math.min(sumLog(job.monthInvoiceLog && job.monthInvoiceLog[field]), baseAmt);
   let style = XLSX_STYLE.DEFAULT;
   if(total > 0) style = invoiced > 0 ? XLSX_STYLE.GREEN : XLSX_STYLE.YELLOW;
