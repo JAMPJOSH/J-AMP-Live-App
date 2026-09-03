@@ -336,6 +336,15 @@
   </nav>
 
   <section class="panel" id="tendersPanel">
+    <div class="forecast-card">
+      <div class="forecast-head">
+        <div class="forecast-title">Quote Pipeline by Month</div>
+      </div>
+      <div class="job-meta" style="margin-bottom:8px;">Grouped by date submitted, from Jul 2026. "Lost" includes Declined. "Pending" is Pending + Submitted (not yet decided).</div>
+      <div class="table-wrap">
+        <table id="quotePipelineTable"></table>
+      </div>
+    </div>
     <div class="toolbar">
       <div class="chip-row" id="tenderChips"></div>
       <span class="spacer"></span>
@@ -4294,6 +4303,53 @@ function renderTenderChips(){
   }).join('');
 }
 
+const QUOTE_PIPELINE_START = '2026-07';
+function computeQuotePipelineByMonth(){
+  const todayMonth = new Date().toISOString().slice(0,7);
+  let endMonth = todayMonth;
+  tenders.forEach(t => { if(t.dateSubmitted){ const mk = t.dateSubmitted.slice(0,7); if(mk > endMonth) endMonth = mk; } });
+  if(endMonth < QUOTE_PIPELINE_START) endMonth = QUOTE_PIPELINE_START;
+  const range = [];
+  let [y,m] = QUOTE_PIPELINE_START.split('-').map(Number);
+  const [ey,em] = endMonth.split('-').map(Number);
+  while(y < ey || (y === ey && m <= em)){
+    range.push(y + '-' + String(m).padStart(2,'0'));
+    m++; if(m > 12){ m = 1; y++; }
+  }
+  return range.map(key => {
+    const list = tenders.filter(t => t.dateSubmitted && t.dateSubmitted.slice(0,7) === key);
+    const won = list.filter(t => t.status === 'Won');
+    const lost = list.filter(t => t.status === 'Lost' || t.status === 'Declined');
+    const pending = list.filter(t => t.status === 'Pending' || t.status === 'Submitted');
+    const sum = arr => arr.reduce((s,t) => s + (t.tenderSum||0), 0);
+    const [yy, mm] = key.split('-');
+    const label = FORECAST_MONTH_LABELS[Number(mm)-1] + '-' + yy.slice(2);
+    return {
+      key, label,
+      preparedCount: list.length, preparedSum: sum(list),
+      wonCount: won.length, wonSum: sum(won),
+      lostCount: lost.length, lostSum: sum(lost),
+      pendingCount: pending.length, pendingSum: sum(pending),
+    };
+  });
+}
+function renderQuotePipelineTable(){
+  const table = document.getElementById('quotePipelineTable');
+  if(!table) return;
+  const data = computeQuotePipelineByMonth();
+  const head = '<thead><tr><th>Month</th><th style="text-align:right">Prepared</th><th style="text-align:right">Won</th><th style="text-align:right">Lost</th><th style="text-align:right">Pending</th></tr></thead>';
+  const totals = {preparedCount:0,preparedSum:0,wonCount:0,wonSum:0,lostCount:0,lostSum:0,pendingCount:0,pendingSum:0};
+  const rows = data.map(d => {
+    totals.preparedCount += d.preparedCount; totals.preparedSum += d.preparedSum;
+    totals.wonCount += d.wonCount; totals.wonSum += d.wonSum;
+    totals.lostCount += d.lostCount; totals.lostSum += d.lostSum;
+    totals.pendingCount += d.pendingCount; totals.pendingSum += d.pendingSum;
+    return `<tr><td>${d.label}</td><td class="num">${d.preparedCount} &middot; ${fmtMoneyFull(d.preparedSum)}</td><td class="num">${d.wonCount} &middot; ${fmtMoneyFull(d.wonSum)}</td><td class="num">${d.lostCount} &middot; ${fmtMoneyFull(d.lostSum)}</td><td class="num">${d.pendingCount} &middot; ${fmtMoneyFull(d.pendingSum)}</td></tr>`;
+  }).join('');
+  const totalRow = `<tr style="font-weight:700;border-top:1px solid var(--edge);"><td>Total</td><td class="num">${totals.preparedCount} &middot; ${fmtMoneyFull(totals.preparedSum)}</td><td class="num">${totals.wonCount} &middot; ${fmtMoneyFull(totals.wonSum)}</td><td class="num">${totals.lostCount} &middot; ${fmtMoneyFull(totals.lostSum)}</td><td class="num">${totals.pendingCount} &middot; ${fmtMoneyFull(totals.pendingSum)}</td></tr>`;
+  table.innerHTML = head + '<tbody>' + rows + totalRow + '</tbody>';
+}
+
 function filteredTenders(){
   let list = tenders.slice();
   const q = tenderFilter.q.trim().toLowerCase();
@@ -4838,6 +4894,7 @@ function renderAll(){
   renderGauges();
   renderTenderChips();
   renderJobChips();
+  renderQuotePipelineTable();
   renderTenderTable();
   renderJobTable();
   renderForecastLegend('');
@@ -5419,8 +5476,8 @@ function colLetter(idx){
   }
   return s;
 }
-const XLSX_STYLE = {DEFAULT:0, GREEN:1, BLUE:2, YELLOW:3, HEADER:4, BOLD:5, GREEN_HEADER:6, BLUE_HEADER:7, YELLOW_HEADER:8, BLACK:9};
-const XLSX_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="7"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF63BE7B"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFBDD7EE"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9D9D9"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF000000"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="10"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="4" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="5" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="4" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="0" fillId="6" borderId="0" xfId="0" applyFill="1"/></cellXfs></styleSheet>`;
+const XLSX_STYLE = {DEFAULT:0, GREEN:1, BLUE:2, YELLOW:3, HEADER:4, BOLD:5, GREEN_HEADER:6, BLUE_HEADER:7, YELLOW_HEADER:8, BLACK:9, RED:10};
+const XLSX_STYLES_XML = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="8"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF63BE7B"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFBDD7EE"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9D9D9"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FF000000"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFFFC7CE"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="11"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="4" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="1" fillId="5" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="3" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="1" fillId="4" borderId="0" xfId="0" applyFill="1" applyFont="1"/><xf numFmtId="0" fontId="0" fillId="6" borderId="0" xfId="0" applyFill="1"/><xf numFmtId="0" fontId="0" fillId="7" borderId="0" xfId="0" applyFill="1"/></cellXfs></styleSheet>`;
 function sheetXml(rows, hasDrawing){
   const rowsXml = rows.map((row, ri) => {
     const r = ri + 1;
@@ -5522,6 +5579,31 @@ function forecastSummaryRow(label, monthTotals, fyTotal){
     .concat(monthTotals.map(t => ({v: Math.round(t*100)/100, s:XLSX_STYLE.HEADER})))
     .concat([{v: Math.round(fyTotal*100)/100, s:XLSX_STYLE.HEADER}]);
 }
+function buildQuotePipelineSheet(){
+  const data = computeQuotePipelineByMonth();
+  const header = ['Month','Prepared Qty','Prepared $','Won Qty','Won $','Lost Qty','Lost $','Pending Qty','Pending $'].map(h => ({v:h, s:XLSX_STYLE.HEADER}));
+  const rows = [header];
+  const totals = {preparedCount:0,preparedSum:0,wonCount:0,wonSum:0,lostCount:0,lostSum:0,pendingCount:0,pendingSum:0};
+  data.forEach(d => {
+    totals.preparedCount += d.preparedCount; totals.preparedSum += d.preparedSum;
+    totals.wonCount += d.wonCount; totals.wonSum += d.wonSum;
+    totals.lostCount += d.lostCount; totals.lostSum += d.lostSum;
+    totals.pendingCount += d.pendingCount; totals.pendingSum += d.pendingSum;
+    rows.push([
+      d.label, d.preparedCount, Math.round(d.preparedSum*100)/100,
+      d.wonCount, {v: Math.round(d.wonSum*100)/100, s:XLSX_STYLE.GREEN},
+      d.lostCount, {v: Math.round(d.lostSum*100)/100, s:XLSX_STYLE.RED},
+      d.pendingCount, {v: Math.round(d.pendingSum*100)/100, s:XLSX_STYLE.YELLOW},
+    ]);
+  });
+  rows.push([
+    {v:'TOTAL', s:XLSX_STYLE.HEADER}, {v:totals.preparedCount, s:XLSX_STYLE.HEADER}, {v:Math.round(totals.preparedSum*100)/100, s:XLSX_STYLE.HEADER},
+    {v:totals.wonCount, s:XLSX_STYLE.HEADER}, {v:Math.round(totals.wonSum*100)/100, s:XLSX_STYLE.HEADER},
+    {v:totals.lostCount, s:XLSX_STYLE.HEADER}, {v:Math.round(totals.lostSum*100)/100, s:XLSX_STYLE.HEADER},
+    {v:totals.pendingCount, s:XLSX_STYLE.HEADER}, {v:Math.round(totals.pendingSum*100)/100, s:XLSX_STYLE.HEADER},
+  ]);
+  return rows;
+}
 function buildYearForecastSheet(year){
   const yy = String(year).slice(2);
   const header = [
@@ -5588,6 +5670,7 @@ function buildExcelExport(){
 
   sheets.push({name:'FY26 Forecast', rows: withLetterhead('FY26 Monthly Forecast — by Project', buildYearForecastSheet(2026))});
   sheets.push({name:'FY27 Forecast', rows: withLetterhead('FY27 Monthly Forecast — by Project', buildYearForecastSheet(2027))});
+  sheets.push({name:'Quote Pipeline', rows: withLetterhead('Quote Pipeline by Month (from Jul 2026)', buildQuotePipelineSheet())});
 
   const jobHeader = [
     {v:'Job', s:XLSX_STYLE.HEADER}, {v:'Builder', s:XLSX_STYLE.HEADER}, {v:'State', s:XLSX_STYLE.HEADER},
