@@ -4333,22 +4333,41 @@ function computeQuotePipelineByMonth(){
     };
   });
 }
+function tendersForQuoteMonth(key){
+  return tenders.filter(t => t.dateSubmitted && t.dateSubmitted.slice(0,7) === key);
+}
+function quoteMonthDetailHtml(key){
+  const list = tendersForQuoteMonth(key).slice().sort((a,b) => (a.dateSubmitted||'').localeCompare(b.dateSubmitted||''));
+  if(!list.length) return '<div class="job-meta">No tenders submitted this month.</div>';
+  const rows = list.map(t => `<tr><td>${escapeHtml(t.jobName||'—')}</td><td>${escapeHtml(t.builder||'—')}</td><td>${fmtDate(t.dateSubmitted)}</td><td class="num">${fmtMoneyFull(t.tenderSum)}</td><td>${statusPill(t.status)}</td></tr>`).join('');
+  return `<table style="max-width:640px;"><thead><tr><th>Job / Site</th><th>Builder</th><th>Submitted</th><th style="text-align:right">Tender $</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
 function renderQuotePipelineTable(){
   const table = document.getElementById('quotePipelineTable');
   if(!table) return;
   const data = computeQuotePipelineByMonth();
-  const head = '<thead><tr><th>Month</th><th style="text-align:right">Prepared</th><th style="text-align:right">Won</th><th style="text-align:right">Lost</th><th style="text-align:right">Pending</th></tr></thead>';
+  const head = '<thead><tr><th></th><th>Month</th><th style="text-align:right">Prepared</th><th style="text-align:right">Won</th><th style="text-align:right">Lost</th><th style="text-align:right">Pending</th></tr></thead>';
   const totals = {preparedCount:0,preparedSum:0,wonCount:0,wonSum:0,lostCount:0,lostSum:0,pendingCount:0,pendingSum:0};
   const rows = data.map(d => {
     totals.preparedCount += d.preparedCount; totals.preparedSum += d.preparedSum;
     totals.wonCount += d.wonCount; totals.wonSum += d.wonSum;
     totals.lostCount += d.lostCount; totals.lostSum += d.lostSum;
     totals.pendingCount += d.pendingCount; totals.pendingSum += d.pendingSum;
-    return `<tr><td>${d.label}</td><td class="num">${d.preparedCount} &middot; ${fmtMoneyFull(d.preparedSum)}</td><td class="num">${d.wonCount} &middot; ${fmtMoneyFull(d.wonSum)}</td><td class="num">${d.lostCount} &middot; ${fmtMoneyFull(d.lostSum)}</td><td class="num">${d.pendingCount} &middot; ${fmtMoneyFull(d.pendingSum)}</td></tr>`;
+    const isOpen = expandedQuoteMonths.has(d.key);
+    const mainRow = `<tr data-month-key="${d.key}"><td><button type="button" class="btn ghost icon small expand-btn quote-month-expand" data-key="${d.key}">${isOpen ? '▾' : '▸'}</button></td><td>${d.label}</td><td class="num">${d.preparedCount} &middot; ${fmtMoneyFull(d.preparedSum)}</td><td class="num">${d.wonCount} &middot; ${fmtMoneyFull(d.wonSum)}</td><td class="num">${d.lostCount} &middot; ${fmtMoneyFull(d.lostSum)}</td><td class="num">${d.pendingCount} &middot; ${fmtMoneyFull(d.pendingSum)}</td></tr>`;
+    const detailRow = isOpen ? `<tr><td></td><td colspan="5">${quoteMonthDetailHtml(d.key)}</td></tr>` : '';
+    return mainRow + detailRow;
   }).join('');
-  const totalRow = `<tr style="font-weight:700;border-top:1px solid var(--edge);"><td>Total</td><td class="num">${totals.preparedCount} &middot; ${fmtMoneyFull(totals.preparedSum)}</td><td class="num">${totals.wonCount} &middot; ${fmtMoneyFull(totals.wonSum)}</td><td class="num">${totals.lostCount} &middot; ${fmtMoneyFull(totals.lostSum)}</td><td class="num">${totals.pendingCount} &middot; ${fmtMoneyFull(totals.pendingSum)}</td></tr>`;
+  const totalRow = `<tr style="font-weight:700;border-top:1px solid var(--edge);"><td></td><td>Total</td><td class="num">${totals.preparedCount} &middot; ${fmtMoneyFull(totals.preparedSum)}</td><td class="num">${totals.wonCount} &middot; ${fmtMoneyFull(totals.wonSum)}</td><td class="num">${totals.lostCount} &middot; ${fmtMoneyFull(totals.lostSum)}</td><td class="num">${totals.pendingCount} &middot; ${fmtMoneyFull(totals.pendingSum)}</td></tr>`;
   table.innerHTML = head + '<tbody>' + rows + totalRow + '</tbody>';
 }
+document.getElementById('quotePipelineTable').addEventListener('click', e => {
+  const btn = e.target.closest('.quote-month-expand');
+  if(!btn) return;
+  const key = btn.dataset.key;
+  if(expandedQuoteMonths.has(key)) expandedQuoteMonths.delete(key); else expandedQuoteMonths.add(key);
+  renderQuotePipelineTable();
+});
 
 function filteredTenders(){
   let list = tenders.slice();
@@ -4374,6 +4393,7 @@ function filteredTenders(){
 }
 
 const expandedTenders = new Set();
+const expandedQuoteMonths = new Set();
 
 function fmtLogTimestamp(iso){
   if(!iso) return 'Imported';
@@ -4446,7 +4466,7 @@ function renderTenderTable(){
     const detailRow = isOpen ? `<tr class="job-detail-row" data-detail-for="${t.id}"><td></td><td colspan="10">${tenderFollowUpHtml(t)}</td></tr>` : '';
     return `<tr class="${flareClass}" data-id="${t.id}" data-type="tender">
       <td><button type="button" class="btn ghost icon small expand-btn" data-id="${t.id}">${isOpen ? '▾' : '▸'}</button></td>
-      <td class="wrap job-cell">${escapeHtml(t.jobName||'—')}${(t.remarksLog&&t.remarksLog.length) ? '<div class="job-meta">'+escapeHtml(t.remarksLog[t.remarksLog.length-1].text)+'</div>' : ''}</td>
+      <td class="wrap job-cell">${escapeHtml(t.jobName||'—')}${(t.remarksLog&&t.remarksLog.length) ? '<div class="job-meta">'+escapeHtml(t.remarksLog[t.remarksLog.length-1].text)+'</div>' : ''}${t.convertedJobId ? '<div class="job-meta" style="color:var(--good);">→ Pushed to Jobs</div>' : ''}</td>
       <td>${escapeHtml(t.builder||'—')}</td>
       <td>${escapeHtml(t.city||'—')}</td>
       <td>${fmtDate(t.dateReceived)}</td>
@@ -5084,6 +5104,24 @@ function closeModal(){
 
 document.getElementById('addTenderBtn').addEventListener('click', () => openModal('tender', null));
 document.getElementById('addJobBtn').addEventListener('click', () => openModal('job', null));
+function maybeConvertWonTenderToJob(t, priorStatus){
+  if(!t || t.status !== 'Won' || priorStatus === 'Won' || t.convertedJobId) return;
+  const job = {
+    id: uid('j'),
+    jobName: t.jobName || '',
+    builder: t.builder || '',
+    state: 'VIC',
+    contractValue: t.tenderSum || 0,
+    probBand: 'Confirmed (>90%)',
+    fy26Total: null,
+    jobType: null,
+    stages: {},
+    stageAmounts: {},
+  };
+  jobs.push(job);
+  t.convertedJobId = job.id;
+  expandedTenders.add(t.id);
+}
 function addRemark(tenderId, inputEl){
   const text = inputEl.value.trim();
   if(!text) return;
@@ -5152,7 +5190,7 @@ document.getElementById('tenderBody').addEventListener('keydown', e => {
 document.getElementById('tenderBody').addEventListener('change', e => {
   if(e.target.classList.contains('followup-status')){
     const t = tenders.find(x => x.id === e.target.dataset.id);
-    if(t){ t.status = e.target.value; saveState(); renderAll(); }
+    if(t){ const prior = t.status; t.status = e.target.value; maybeConvertWonTenderToJob(t, prior); saveState(); renderAll(); }
   } else if(e.target.classList.contains('followup-chasedate')){
     const t = tenders.find(x => x.id === e.target.dataset.id);
     if(t){ t.chaseDate = e.target.value || null; saveState(); renderAll(); }
@@ -5327,12 +5365,17 @@ document.getElementById('entryForm').addEventListener('submit', e => {
     });
   }
   const list = type === 'tender' ? tenders : jobs;
+  let priorStatus = null;
   if(id){
     const idx = list.findIndex(r => r.id === id);
+    priorStatus = list[idx].status;
     list[idx] = Object.assign({}, list[idx], record);
   } else {
     record.id = uid(type === 'tender' ? 't' : 'j');
     list.push(record);
+  }
+  if(type === 'tender'){
+    maybeConvertWonTenderToJob(list.find(r => r.id === (id || record.id)), priorStatus);
   }
   saveState();
   renderAll();
@@ -5595,6 +5638,21 @@ function buildQuotePipelineSheet(){
       d.lostCount, {v: Math.round(d.lostSum*100)/100, s:XLSX_STYLE.RED},
       d.pendingCount, {v: Math.round(d.pendingSum*100)/100, s:XLSX_STYLE.YELLOW},
     ]);
+
+    const list = tendersForQuoteMonth(d.key).slice().sort((a,b) => (a.dateSubmitted||'').localeCompare(b.dateSubmitted||''));
+    if(list.length){
+      rows.push([
+        null, {v:'Job / Site', s:XLSX_STYLE.BOLD}, {v:'Builder', s:XLSX_STYLE.BOLD}, {v:'Submitted', s:XLSX_STYLE.BOLD}, {v:'Tender $', s:XLSX_STYLE.BOLD}, {v:'Status', s:XLSX_STYLE.BOLD},
+      ]);
+      list.forEach(t => {
+        const style = t.status === 'Won' ? XLSX_STYLE.GREEN : (t.status === 'Lost' || t.status === 'Declined') ? XLSX_STYLE.RED : XLSX_STYLE.YELLOW;
+        rows.push([
+          null, '   ↳ ' + (t.jobName||''), t.builder||'', t.dateSubmitted||'',
+          {v: Math.round((t.tenderSum||0)*100)/100, s: style}, t.status||'',
+        ]);
+      });
+      rows.push([]);
+    }
   });
   rows.push([
     {v:'TOTAL', s:XLSX_STYLE.HEADER}, {v:totals.preparedCount, s:XLSX_STYLE.HEADER}, {v:Math.round(totals.preparedSum*100)/100, s:XLSX_STYLE.HEADER},
