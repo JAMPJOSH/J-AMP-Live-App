@@ -79,7 +79,7 @@
   }
   @media (prefers-reduced-motion:reduce){ .scanline{animation:none;display:none;} }
 
-  .hud{ position:relative; z-index:2; max-width:1400px; margin:0 auto; padding:20px 22px 60px; }
+  .hud{ position:relative; z-index:2; max-width:2400px; margin:0 auto; padding:20px 22px 60px; }
 
   /* ---------- top bar ---------- */
   .topbar{ display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:20px; padding-bottom:16px; border-bottom:1px solid var(--edge); }
@@ -160,7 +160,7 @@
   table{ width:100%; border-collapse:collapse; font-size:.82rem; }
   thead th{
     font-family:var(--font-mono); font-size:.65rem; letter-spacing:.1em; text-transform:uppercase; color:var(--text-dim);
-    text-align:left; padding:8px 10px; border-bottom:1px solid var(--edge); white-space:nowrap; cursor:pointer; user-select:none;
+    text-align:left; padding:8px 7px; border-bottom:1px solid var(--edge); white-space:nowrap; cursor:pointer; user-select:none;
   }
   thead th:hover{ color:var(--text); }
   tbody tr{ border-bottom:1px solid var(--edge-soft); }
@@ -175,9 +175,11 @@
   tr.flare-invoiced{ box-shadow:inset 3px 0 0 var(--good); }
   tr.flare-not-invoiced{ box-shadow:inset 3px 0 0 var(--warn); }
   tbody tr.flare-soon{ box-shadow:inset 3px 0 0 var(--warn); }
-  td{ padding:9px 10px; vertical-align:top; white-space:nowrap; }
+  td{ padding:9px 7px; vertical-align:top; white-space:nowrap; }
   td.wrap{ white-space:normal; min-width:220px; }
+  td.wrap-sm{ white-space:normal; min-width:110px; max-width:220px; }
   td.num{ text-align:right; font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
+  td.num .job-meta, td.num > div{ white-space:normal; max-width:150px; margin-left:auto; }
   .job-cell{ font-weight:600; }
   .job-meta{ font-size:.72rem; color:var(--text-faint); font-weight:400; }
 
@@ -374,6 +376,7 @@
   </section>
 
   <section class="panel" id="jobsPanel" hidden>
+    <div class="job-meta" id="forecastTenderNote" style="margin-bottom:10px;"></div>
     <div class="forecast-card">
       <div class="forecast-head">
         <div class="forecast-title">FY26 Monthly Forecast</div>
@@ -4015,7 +4018,7 @@ let currentEdit = null; // {type:'tender'|'job', id: string|null}
 
 function uid(prefix){ return prefix + '_' + Math.random().toString(36).slice(2,10); }
 
-const TENDER_MERGE_FIELDS = ['no','jobName','city','builder','contact','dateReceived','dueDate','dateSubmitted','tenderSum','profitPct','status','month'];
+const TENDER_MERGE_FIELDS = ['no','jobName','city','builder','contact','dateReceived','dueDate','dateSubmitted','tenderSum','profitPct','status','month','probBand','forecastStart','forecastMonths'];
 const JOB_MERGE_FIELDS = ['state','jobName','builder','probBand','probWin','contractValue','jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec','fy26Total'];
 
 function tenderMatchKey(t){
@@ -4448,6 +4451,24 @@ function tenderFollowUpHtml(t){
         <label>Remarks history</label>
         ${remarksLogHtml(t)}
       </div>
+    </div>
+    ${tenderForecastControlsHtml(t)}`;
+}
+function tenderForecastControlsHtml(t){
+  const bands = ['Confirmed (>90%)','Possible (50-89%)','Unlikely (<50%)'];
+  const monthsVal = t.forecastMonths || TENDER_FORECAST_DEFAULT_MONTHS;
+  if(READ_ONLY){
+    const b = tenderForecastBand(t);
+    return `<div class="job-meta" style="margin:12px 0 4px;">FORECAST</div><div>${b ? escapeHtml(b) + ' &middot; from ' + escapeHtml(t.forecastStart||'—') + ' over ' + monthsVal + ' mo' : 'Not in forecast'}</div>`;
+  }
+  const bandSel = `<select class="followup-band" data-id="${t.id}"><option value="">— none —</option>${bands.map(o => `<option value="${o}" ${o===t.probBand?'selected':''}>${o}</option>`).join('')}</select>`;
+  const startSel = `<select class="followup-start" data-id="${t.id}"><option value="">— none —</option>${STAGE_MONTH_OPTIONS.map(o => `<option value="${o.value}" ${o.value===t.forecastStart?'selected':''}>${o.label}</option>`).join('')}</select>`;
+  const spreadInput = `<input type="number" min="1" max="36" step="1" class="followup-spread" data-id="${t.id}" value="${monthsVal}"/>`;
+  return `<div class="job-meta" style="margin:14px 0 8px;">FORECAST &mdash; adds this tender's value to the forecast while it is Submitted (moves to the job when Won)</div>
+    <div class="field-row" style="grid-template-columns:200px 200px 140px 1fr;align-items:start;">
+      <div class="field"><label>Forecast Band</label>${bandSel}</div>
+      <div class="field"><label>Expected Start</label>${startSel}</div>
+      <div class="field"><label>Spread (months)</label>${spreadInput}</div>
     </div>`;
 }
 
@@ -4475,9 +4496,9 @@ function renderTenderTable(){
     const detailRow = isOpen ? `<tr class="job-detail-row" data-detail-for="${t.id}"><td></td><td colspan="10">${tenderFollowUpHtml(t)}</td></tr>` : '';
     return `<tr class="${flareClass}" data-id="${t.id}" data-type="tender">
       <td><button type="button" class="btn ghost icon small expand-btn" data-id="${t.id}">${isOpen ? '▾' : '▸'}</button></td>
-      <td class="wrap job-cell">${escapeHtml(t.jobName||'—')}${(t.remarksLog&&t.remarksLog.length) ? '<div class="job-meta">'+escapeHtml(t.remarksLog[t.remarksLog.length-1].text)+'</div>' : ''}${t.convertedJobId ? '<div class="job-meta" style="color:var(--good);">→ Pushed to Jobs</div>' : ''}</td>
-      <td>${escapeHtml(t.builder||'—')}</td>
-      <td>${escapeHtml(t.city||'—')}</td>
+      <td class="wrap job-cell">${escapeHtml(t.jobName||'—')}${(t.remarksLog&&t.remarksLog.length) ? '<div class="job-meta">'+escapeHtml(t.remarksLog[t.remarksLog.length-1].text)+'</div>' : ''}${t.convertedJobId ? '<div class="job-meta" style="color:var(--good);">→ Pushed to Jobs</div>' : ''}${tenderCountsInForecast(t) ? '<div class="job-meta" style="color:var(--info);">Forecast: '+escapeHtml(tenderForecastBand(t).split(' (')[0])+' &middot; from '+escapeHtml((STAGE_MONTH_OPTIONS.find(o => o.value===t.forecastStart)||{label:t.forecastStart}).label)+' &middot; '+(t.forecastMonths||TENDER_FORECAST_DEFAULT_MONTHS)+' mo</div>' : ''}</td>
+      <td class="wrap-sm">${escapeHtml(t.builder||'—')}</td>
+      <td class="wrap-sm">${escapeHtml(t.city||'—')}</td>
       <td>${fmtDate(t.dateReceived)}</td>
       <td>${fmtDate(t.dueDate)}${flareTag}</td>
       <td>${fmtDate(t.dateSubmitted)}</td>
@@ -4777,6 +4798,52 @@ const FORECAST_BANDS = [
   {key:'Unlikely (<50%)', label:'Unlikely', color:'var(--text-dim)'},
   {key:'Variations', label:'Variations', color:'var(--info)'},
 ];
+const TENDER_FORECAST_DEFAULT_MONTHS = 3;
+function parseMonthKey(key){
+  if(!key || typeof key !== 'string') return null;
+  const parts = key.split('-');
+  const y = parseInt(parts[0], 10);
+  const i = FORECAST_MONTH_KEYS.indexOf(parts[1]);
+  if(isNaN(y) || i < 0) return null;
+  return y * 12 + i;
+}
+function defaultTenderForecastStart(t){
+  const now = new Date();
+  let earliest = now.getFullYear() * 12 + now.getMonth() + 1;
+  if(t && t.dateSubmitted){
+    const sy = parseInt(t.dateSubmitted.slice(0,4), 10), sm = parseInt(t.dateSubmitted.slice(5,7), 10) - 1;
+    if(!isNaN(sy) && !isNaN(sm)) earliest = Math.max(earliest, sy * 12 + sm + 1);
+  }
+  return Math.floor(earliest / 12) + '-' + FORECAST_MONTH_KEYS[earliest % 12];
+}
+function tenderForecastBand(t){
+  const valid = FORECAST_BANDS.slice(0,3).map(b => b.key);
+  return valid.indexOf(t.probBand) >= 0 ? t.probBand : null;
+}
+function tenderSpreadPlan(t){
+  const start = parseMonthKey(t.forecastStart);
+  const sum = t.tenderSum || 0;
+  if(start === null || sum <= 0) return [];
+  const n = Math.max(1, Math.min(36, Math.round(t.forecastMonths || TENDER_FORECAST_DEFAULT_MONTHS)));
+  const each = Math.round(sum / n * 100) / 100;
+  const plan = [];
+  let used = 0;
+  for(let k = 0; k < n; k++){
+    const o = start + k;
+    const amount = k === n - 1 ? Math.round((sum - used) * 100) / 100 : each;
+    used += each;
+    plan.push({year: Math.floor(o / 12), mk: FORECAST_MONTH_KEYS[o % 12], amount});
+  }
+  return plan;
+}
+function tenderCountsInForecast(t){
+  return t.status === 'Submitted' && !t.convertedJobId && !!tenderForecastBand(t) && tenderSpreadPlan(t).length > 0;
+}
+function tenderForecastAmount(t, year, mk){
+  if(!tenderCountsInForecast(t)) return 0;
+  const hit = tenderSpreadPlan(t).find(p => p.year === year && p.mk === mk);
+  return hit ? hit.amount : 0;
+}
 function computeMonthlyForecast(year){
   return FORECAST_MONTH_KEYS.map((mk, i) => {
     const row = {month: FORECAST_MONTH_LABELS[i], total:0};
@@ -4792,6 +4859,10 @@ function computeMonthlyForecast(year){
       (j.variations||[]).forEach(v => { if(v.month === key && (v.status === 'Approved' || sumLog(v.invoiceLog) > 0)) varNet += Math.min(sumLog(v.invoiceLog), v.amount||0); });
       row['Variations'] += varNet;
       row.total += varNet;
+    });
+    tenders.forEach(t => {
+      const amt = tenderForecastAmount(t, year, mk);
+      if(amt){ row[tenderForecastBand(t)] += amt; row.total += amt; }
     });
     return row;
   });
@@ -4919,8 +4990,18 @@ function escapeHtml(s){
   return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 }
 
+function renderForecastTenderNote(){
+  const el = document.getElementById('forecastTenderNote');
+  if(!el) return;
+  const counted = tenders.filter(tenderCountsInForecast);
+  const sum = counted.reduce((s,t) => s + (t.tenderSum||0), 0);
+  el.textContent = counted.length
+    ? 'Forecast includes ' + counted.length + ' submitted tender' + (counted.length===1?'':'s') + ' (' + fmtMoney(sum) + ') placed in their chosen band. They move to the job when marked Won.'
+    : 'No submitted tenders have been given a forecast band yet. Open a tender (▸) and pick a Forecast Band to include it here.';
+}
 function renderAll(){
   renderGauges();
+  renderForecastTenderNote();
   renderTenderChips();
   renderJobChips();
   renderQuotePipelineTable();
@@ -4998,6 +5079,9 @@ const TENDER_FIELDS = [
   {key:'tenderSum', label:'Tender Sum ($)', type:'number', step:'0.01'},
   {key:'profitPct', label:'Profit %', type:'number', step:'0.1', toDisplay: v => (v===null||v===undefined) ? '' : Math.round(v*1000)/10, fromDisplay: v => (v===null||v===undefined) ? null : v/100},
   {key:'status', label:'Status', type:'select', options:['Pending','Submitted','Won','Lost','Declined']},
+  {key:'probBand', label:'Forecast Band (counts while Submitted)', type:'select', options:['','Confirmed (>90%)','Possible (50-89%)','Unlikely (<50%)']},
+  {key:'forecastStart', label:'Expected Start Month', type:'select', options: () => [{value:'', label:'— none —'}].concat(STAGE_MONTH_OPTIONS)},
+  {key:'forecastMonths', label:'Spread Over (months)', type:'number', step:'1'},
 ];
 const JOB_FIELDS = [
   {key:'jobName', label:'Job', type:'text', required:true},
@@ -5057,7 +5141,13 @@ function monthlyForJobYear(job, year){
 function fieldHtml(f, value){
   const val = value === undefined || value === null ? '' : value;
   if(f.type === 'select'){
-    return `<div class="field"><label>${f.label}</label><select name="${f.key}">${f.options.map(o=>`<option value="${o}" ${o===val?'selected':''}>${o}</option>`).join('')}</select></div>`;
+    const opts = typeof f.options === 'function' ? f.options() : f.options;
+    const optHtml = opts.map(o => {
+      const ov = typeof o === 'object' ? o.value : o;
+      const ol = typeof o === 'object' ? o.label : (o === '' ? '— none —' : o);
+      return `<option value="${ov}" ${ov===val?'selected':''}>${ol}</option>`;
+    }).join('');
+    return `<div class="field"><label>${f.label}</label><select name="${f.key}">${optHtml}</select></div>`;
   }
   if(f.type === 'textarea'){
     return `<div class="field"><label>${f.label}</label><textarea name="${f.key}">${escapeHtml(val)}</textarea></div>`;
@@ -5127,6 +5217,9 @@ function maybeConvertWonTenderToJob(t, priorStatus){
     stages: {},
     stageAmounts: {},
   };
+  tenderSpreadPlan(t).forEach(p => {
+    if(FORECAST_YEARS.indexOf(p.year) >= 0) job[commercialFieldFor(p.year, p.mk)] = p.amount;
+  });
   jobs.push(job);
   t.convertedJobId = job.id;
   expandedTenders.add(t.id);
@@ -5203,6 +5296,23 @@ document.getElementById('tenderBody').addEventListener('change', e => {
   } else if(e.target.classList.contains('followup-chasedate')){
     const t = tenders.find(x => x.id === e.target.dataset.id);
     if(t){ t.chaseDate = e.target.value || null; saveState(); renderAll(); }
+  } else if(e.target.classList.contains('followup-band')){
+    const t = tenders.find(x => x.id === e.target.dataset.id);
+    if(t){
+      t.probBand = e.target.value || null;
+      if(t.probBand && !t.forecastStart) t.forecastStart = defaultTenderForecastStart(t);
+      saveState(); renderAll();
+    }
+  } else if(e.target.classList.contains('followup-start')){
+    const t = tenders.find(x => x.id === e.target.dataset.id);
+    if(t){ t.forecastStart = e.target.value || null; saveState(); renderAll(); }
+  } else if(e.target.classList.contains('followup-spread')){
+    const t = tenders.find(x => x.id === e.target.dataset.id);
+    if(t){
+      const n = parseInt(e.target.value, 10);
+      t.forecastMonths = (isNaN(n) || n < 1) ? null : Math.min(36, n);
+      saveState(); renderAll();
+    }
   }
 });
 document.getElementById('jobBody').addEventListener('click', e => {
@@ -5372,6 +5482,9 @@ document.getElementById('entryForm').addEventListener('submit', e => {
       const val = raw === null || raw === '' ? null : parseFloat(raw);
       if(val !== null && !isNaN(val)) record.stageAmounts[d.key] = val;
     });
+  }
+  if(type === 'tender' && record.probBand && !record.forecastStart){
+    record.forecastStart = defaultTenderForecastStart(record);
   }
   const list = type === 'tender' ? tenders : jobs;
   let priorStatus = null;
@@ -5679,14 +5792,15 @@ function buildYearForecastSheet(year){
   ].concat(FORECAST_MONTH_LABELS.map(m => ({v: m + '-' + yy, s:XLSX_STYLE.HEADER})))
    .concat([{v:'FY' + yy + ' Total', s:XLSX_STYLE.HEADER}]);
   const rows = [header];
-  const bandGroups = FORECAST_BAND_ORDER.map(band => ({band, jobs: jobs.filter(j => j.probBand === band)}));
+  const yearTenders = tenders.filter(t => FORECAST_MONTH_KEYS.some(mk => tenderForecastAmount(t, year, mk) > 0));
+  const bandGroups = FORECAST_BAND_ORDER.map(band => ({band, jobs: jobs.filter(j => j.probBand === band), tenders: yearTenders.filter(t => tenderForecastBand(t) === band)}));
   const unbanded = jobs.filter(j => FORECAST_BAND_ORDER.indexOf(j.probBand) === -1);
-  if(unbanded.length) bandGroups.push({band: null, jobs: unbanded});
+  if(unbanded.length) bandGroups.push({band: null, jobs: unbanded, tenders: []});
 
   const monthTotals = FORECAST_MONTH_KEYS.map(() => 0);
   let grandTotal = 0;
   bandGroups.forEach(group => {
-    if(!group.jobs.length) return;
+    if(!group.jobs.length && !group.tenders.length) return;
     const bandMonthTotals = FORECAST_MONTH_KEYS.map(() => 0);
     let bandTotal = 0;
     group.jobs.forEach(j => {
@@ -5713,6 +5827,15 @@ function buildYearForecastSheet(year){
           '', '   ↳ Variation: ' + (v.description||''), '', '', '', '',
         ].concat(varCells).concat([{v:invoiced, s:style}]));
       });
+    });
+    group.tenders.forEach(t => {
+      const amts = FORECAST_MONTH_KEYS.map(mk => tenderForecastAmount(t, year, mk));
+      const fy = Math.round(amts.reduce((s,a) => s + a, 0) * 100) / 100;
+      amts.forEach((a,i) => { bandMonthTotals[i] += a; });
+      bandTotal += fy;
+      rows.push([
+        '', '[Submitted tender] ' + (t.jobName||''), t.builder||'', '', t.probBand||'', t.tenderSum||0,
+      ].concat(amts.map(a => ({v: Math.round(a*100)/100, s: a > 0 ? XLSX_STYLE.YELLOW : XLSX_STYLE.DEFAULT}))).concat([fy]));
     });
     bandMonthTotals.forEach((t,i) => { monthTotals[i] += t; });
     grandTotal += bandTotal;
