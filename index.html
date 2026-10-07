@@ -178,6 +178,7 @@
   td{ padding:9px 7px; vertical-align:top; white-space:nowrap; }
   td.wrap{ white-space:normal; min-width:220px; }
   td.wrap-sm{ white-space:normal; min-width:110px; max-width:220px; }
+  .quick-band{ margin-top:5px; width:104px; font-size:.68rem; padding:3px 4px; }
   td.num{ text-align:right; font-family:var(--font-mono); font-variant-numeric:tabular-nums; }
   td.num .job-meta, td.num > div{ white-space:normal; max-width:150px; margin-left:auto; }
   .job-cell{ font-weight:600; }
@@ -4018,7 +4019,7 @@ let currentEdit = null; // {type:'tender'|'job', id: string|null}
 
 function uid(prefix){ return prefix + '_' + Math.random().toString(36).slice(2,10); }
 
-const TENDER_MERGE_FIELDS = ['no','jobName','city','builder','contact','dateReceived','dueDate','dateSubmitted','tenderSum','profitPct','status','month','probBand','forecastStart','forecastMonths'];
+const TENDER_MERGE_FIELDS = ['no','jobName','city','builder','contact','dateReceived','dueDate','dateSubmitted','tenderSum','profitPct','status','month','probBand','forecastStart','forecastMonths','jobType','stages','stageAmounts','forecastStageMonths','forecastPlan'];
 const JOB_MERGE_FIELDS = ['state','jobName','builder','probBand','probWin','contractValue','jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec','fy26Total'];
 
 function tenderMatchKey(t){
@@ -4454,22 +4455,80 @@ function tenderFollowUpHtml(t){
     </div>
     ${tenderForecastControlsHtml(t)}`;
 }
+function quickBandSelectHtml(t){
+  const opts = [['Confirmed (>90%)','Confirmed'],['Possible (50-89%)','Possible'],['Unlikely (<50%)','Unlikely']];
+  return `<div><select class="followup-band quick-band" data-id="${t.id}" title="Add this tender to the forecast"><option value="">${t.probBand ? '— remove —' : 'Forecast…'}</option>${opts.map(o => `<option value="${o[0]}" ${o[0]===t.probBand?'selected':''}>${o[1]}</option>`).join('')}</select></div>`;
+}
 function tenderForecastControlsHtml(t){
   const bands = ['Confirmed (>90%)','Possible (50-89%)','Unlikely (<50%)'];
   const monthsVal = t.forecastMonths || TENDER_FORECAST_DEFAULT_MONTHS;
   if(READ_ONLY){
     const b = tenderForecastBand(t);
-    return `<div class="job-meta" style="margin:12px 0 4px;">FORECAST</div><div>${b ? escapeHtml(b) + ' &middot; from ' + escapeHtml(t.forecastStart||'—') + ' over ' + monthsVal + ' mo' : 'Not in forecast'}</div>`;
+    if(!b) return `<div class="job-meta" style="margin:12px 0 4px;">FORECAST</div><div>Not in forecast</div>`;
+    const lines = tenderSpreadPlan(t).map(p => escapeHtml(fmtMonthKey(p.year + '-' + p.mk)) + ': ' + fmtMoneyFull(p.amount)).join(' &nbsp;&middot;&nbsp; ');
+    return `<div class="job-meta" style="margin:12px 0 4px;">FORECAST &mdash; ${escapeHtml(b)}${t.jobType ? ' &middot; ' + escapeHtml(t.jobType) : ''}</div><div>${lines || '—'}</div>`;
   }
   const bandSel = `<select class="followup-band" data-id="${t.id}"><option value="">— none —</option>${bands.map(o => `<option value="${o}" ${o===t.probBand?'selected':''}>${o}</option>`).join('')}</select>`;
+  const typeSel = `<select class="followup-jobtype" data-id="${t.id}"><option value="">— pick —</option>${['Residential','Commercial'].map(o => `<option value="${o}" ${o===t.jobType?'selected':''}>${o}</option>`).join('')}</select>`;
   const startSel = `<select class="followup-start" data-id="${t.id}"><option value="">— none —</option>${STAGE_MONTH_OPTIONS.map(o => `<option value="${o.value}" ${o.value===t.forecastStart?'selected':''}>${o.label}</option>`).join('')}</select>`;
   const spreadInput = `<input type="number" min="1" max="36" step="1" class="followup-spread" data-id="${t.id}" value="${monthsVal}"/>`;
   return `<div class="job-meta" style="margin:14px 0 8px;">FORECAST &mdash; adds this tender's value to the forecast while it is Submitted (moves to the job when Won)</div>
-    <div class="field-row" style="grid-template-columns:200px 200px 140px 1fr;align-items:start;">
+    <div class="field-row" style="grid-template-columns:200px 160px 200px 140px 1fr;align-items:start;">
       <div class="field"><label>Forecast Band</label>${bandSel}</div>
+      <div class="field"><label>Job Type</label>${typeSel}</div>
       <div class="field"><label>Expected Start</label>${startSel}</div>
       <div class="field"><label>Spread (months)</label>${spreadInput}</div>
-    </div>`;
+    </div>
+    ${t.probBand ? tenderBreakdownHtml(t) : ''}`;
+}
+function fmtMonthKey(k){
+  const o = STAGE_MONTH_OPTIONS.find(x => x.value === k);
+  return o ? o.label : (k || '—');
+}
+function monthSelectHtml(cls, dataAttrs, value, blankLabel){
+  return `<select class="${cls}" ${dataAttrs}>${blankLabel ? `<option value="">${blankLabel}</option>` : ''}${STAGE_MONTH_OPTIONS.map(o => `<option value="${o.value}" ${o.value===value?'selected':''}>${o.label}</option>`).join('')}</select>`;
+}
+function tenderBreakdownHtml(t){
+  const sum = t.tenderSum || 0;
+  if(t.jobType === 'Residential'){
+    const rows = tenderStageRows(t);
+    const stages = t.stages || DEFAULT_STAGES;
+    const body = rows.map(r => `<tr>
+      <td>${r.label}</td>
+      <td><input type="number" step="0.1" min="0" max="100" class="fc-stage-pct" data-id="${t.id}" data-stage="${r.key}" value="${stages[r.key] || 0}" style="width:70px;text-align:right;"/></td>
+      <td><input type="number" step="0.01" min="0" class="fc-stage-amt" data-id="${t.id}" data-stage="${r.key}" placeholder="or fixed $" value="${r.overridden ? (t.stageAmounts||{})[r.key] : ''}" style="width:100px;text-align:right;"/></td>
+      <td class="num">${fmtMoneyFull(r.amount)}</td>
+      <td>${monthSelectHtml('fc-stage-month', `data-id="${t.id}" data-stage="${r.key}"`, r.month, '— month —')}</td>
+    </tr>`).join('');
+    const totalPct = rows.reduce((s,r) => s + r.pct, 0);
+    const placed = rows.filter(r => parseMonthKey(r.month) !== null).reduce((s,r) => s + r.amount, 0);
+    const diff = Math.round((sum - placed) * 100) / 100;
+    const warn = Math.abs(diff) > 0.5 ? `<span style="color:var(--warn);"> &middot; ${fmtMoneyFull(Math.abs(diff))} ${diff > 0 ? 'not yet placed in a month' : 'over the tender sum'}</span>` : ' &middot; fully placed';
+    return `<div class="job-meta" style="margin:12px 0 6px;">RESIDENTIAL STAGE CLAIMS &mdash; each stage lands in the month you pick</div>
+      <table style="max-width:640px;"><thead><tr><th>Stage</th><th style="text-align:right">%</th><th style="text-align:right">Fixed $</th><th style="text-align:right">Amount</th><th>Month</th></tr></thead><tbody>${body}</tbody></table>
+      <div class="job-meta" style="margin-top:6px;">Stages total ${totalPct.toFixed(1)}%${warn}</div>`;
+  }
+  if(t.jobType === 'Commercial'){
+    const plan = t.forecastPlan || {};
+    const keys = Object.keys(plan).filter(k => parseMonthKey(k) !== null).sort((a,b) => parseMonthKey(a) - parseMonthKey(b));
+    const body = keys.map(k => `<tr>
+      <td>${monthSelectHtml('fc-plan-month', `data-id="${t.id}" data-key="${k}"`, k, '')}</td>
+      <td><input type="number" step="0.01" min="0" class="fc-plan-amt" data-id="${t.id}" data-key="${k}" value="${plan[k]}" style="width:110px;text-align:right;"/></td>
+      <td><button type="button" class="btn ghost icon small fc-plan-del" data-id="${t.id}" data-key="${k}" title="Remove month">&times;</button></td>
+    </tr>`).join('');
+    const placed = keys.reduce((s,k) => s + (parseFloat(plan[k]) || 0), 0);
+    const diff = Math.round((sum - placed) * 100) / 100;
+    const warn = Math.abs(diff) > 0.5 ? `<span style="color:var(--warn);">${fmtMoneyFull(Math.abs(diff))} ${diff > 0 ? 'still to place' : 'over the tender sum'}</span>` : 'fully placed';
+    return `<div class="job-meta" style="margin:12px 0 6px;">COMMERCIAL MONTHLY CLAIMS &mdash; the amount you expect to claim each month</div>
+      <table style="max-width:360px;"><thead><tr><th>Month</th><th style="text-align:right">Claim $</th><th></th></tr></thead><tbody>${body || '<tr><td colspan="3" class="job-meta">No months yet.</td></tr>'}</tbody></table>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+        <button type="button" class="btn ghost small fc-plan-add" data-id="${t.id}">+ Add month</button>
+        <button type="button" class="btn ghost small fc-plan-spread" data-id="${t.id}" title="Replace the months above with an even split from Expected Start over Spread months">Spread evenly</button>
+        <span class="job-meta">Placed ${fmtMoneyFull(placed)} of ${fmtMoneyFull(sum)} &middot; ${warn}</span>
+      </div>`;
+  }
+  const plan = tenderSpreadPlan(t);
+  return `<div class="job-meta" style="margin:12px 0 0;">Pick a <strong>Job Type</strong> above to break this down: Residential = stage claims, Commercial = monthly claims. Until then it is spread evenly (${plan.length} month${plan.length===1?'':'s'}).</div>`;
 }
 
 function renderTenderTable(){
@@ -4496,7 +4555,7 @@ function renderTenderTable(){
     const detailRow = isOpen ? `<tr class="job-detail-row" data-detail-for="${t.id}"><td></td><td colspan="10">${tenderFollowUpHtml(t)}</td></tr>` : '';
     return `<tr class="${flareClass}" data-id="${t.id}" data-type="tender">
       <td><button type="button" class="btn ghost icon small expand-btn" data-id="${t.id}">${isOpen ? '▾' : '▸'}</button></td>
-      <td class="wrap job-cell">${escapeHtml(t.jobName||'—')}${(t.remarksLog&&t.remarksLog.length) ? '<div class="job-meta">'+escapeHtml(t.remarksLog[t.remarksLog.length-1].text)+'</div>' : ''}${t.convertedJobId ? '<div class="job-meta" style="color:var(--good);">→ Pushed to Jobs</div>' : ''}${tenderCountsInForecast(t) ? '<div class="job-meta" style="color:var(--info);">Forecast: '+escapeHtml(tenderForecastBand(t).split(' (')[0])+' &middot; from '+escapeHtml((STAGE_MONTH_OPTIONS.find(o => o.value===t.forecastStart)||{label:t.forecastStart}).label)+' &middot; '+(t.forecastMonths||TENDER_FORECAST_DEFAULT_MONTHS)+' mo</div>' : ''}</td>
+      <td class="wrap job-cell">${escapeHtml(t.jobName||'—')}${(t.remarksLog&&t.remarksLog.length) ? '<div class="job-meta">'+escapeHtml(t.remarksLog[t.remarksLog.length-1].text)+'</div>' : ''}${t.convertedJobId ? '<div class="job-meta" style="color:var(--good);">→ Pushed to Jobs</div>' : ''}${tenderCountsInForecast(t) ? '<div class="job-meta" style="color:var(--info);">'+escapeHtml(tenderForecastTag(t))+'</div>' : ''}</td>
       <td class="wrap-sm">${escapeHtml(t.builder||'—')}</td>
       <td class="wrap-sm">${escapeHtml(t.city||'—')}</td>
       <td>${fmtDate(t.dateReceived)}</td>
@@ -4505,7 +4564,7 @@ function renderTenderTable(){
       <td>${fmtDate(t.chaseDate)}${chaseFlareTag}</td>
       <td class="num">${fmtMoneyFull(t.tenderSum)}</td>
       <td class="num">${fmtPct(t.profitPct)}</td>
-      <td>${statusPill(t.status)}</td>
+      <td>${statusPill(t.status)}${(!READ_ONLY && t.status === 'Submitted') ? quickBandSelectHtml(t) : ''}</td>
       <td><div class="row-actions edit-only"><button class="btn ghost icon small edit-btn" data-id="${t.id}" data-type="tender">Edit</button></div></td>
     </tr>${detailRow}`;
   }).join('');
@@ -4820,21 +4879,77 @@ function tenderForecastBand(t){
   const valid = FORECAST_BANDS.slice(0,3).map(b => b.key);
   return valid.indexOf(t.probBand) >= 0 ? t.probBand : null;
 }
-function tenderSpreadPlan(t){
+function monthKeyFromOrdinal(o){ return Math.floor(o / 12) + '-' + FORECAST_MONTH_KEYS[o % 12]; }
+function planFromOrdinalAmounts(acc){
+  return Object.keys(acc).map(Number).sort((a,b) => a - b)
+    .map(o => ({year: Math.floor(o / 12), mk: FORECAST_MONTH_KEYS[o % 12], amount: Math.round(acc[o] * 100) / 100}))
+    .filter(p => p.amount > 0);
+}
+function tenderEvenPlan(t){
   const start = parseMonthKey(t.forecastStart);
   const sum = t.tenderSum || 0;
   if(start === null || sum <= 0) return [];
   const n = Math.max(1, Math.min(36, Math.round(t.forecastMonths || TENDER_FORECAST_DEFAULT_MONTHS)));
   const each = Math.round(sum / n * 100) / 100;
-  const plan = [];
+  const acc = {};
   let used = 0;
   for(let k = 0; k < n; k++){
-    const o = start + k;
-    const amount = k === n - 1 ? Math.round((sum - used) * 100) / 100 : each;
+    acc[start + k] = k === n - 1 ? Math.round((sum - used) * 100) / 100 : each;
     used += each;
-    plan.push({year: Math.floor(o / 12), mk: FORECAST_MONTH_KEYS[o % 12], amount});
   }
-  return plan;
+  return planFromOrdinalAmounts(acc);
+}
+function tenderStageRows(t){
+  const stages = computeStages({contractValue: t.tenderSum || 0, stages: t.stages || DEFAULT_STAGES, stageAmounts: t.stageAmounts});
+  return stages.map((s, i) => ({key: STAGE_DEFS[i].key, label: s.name, pct: s.pct * 100, amount: s.amount, overridden: s.overridden, month: (t.forecastStageMonths || {})[STAGE_DEFS[i].key] || null}));
+}
+function tenderSpreadPlan(t){
+  const sum = t.tenderSum || 0;
+  if(sum <= 0) return [];
+  if(t.jobType === 'Residential' && t.forecastStageMonths){
+    const acc = {};
+    tenderStageRows(t).forEach(r => {
+      const o = parseMonthKey(r.month);
+      if(o !== null && r.amount > 0) acc[o] = (acc[o] || 0) + r.amount;
+    });
+    return planFromOrdinalAmounts(acc);
+  }
+  if(t.jobType === 'Commercial' && t.forecastPlan && Object.keys(t.forecastPlan).length){
+    const acc = {};
+    Object.keys(t.forecastPlan).forEach(k => {
+      const o = parseMonthKey(k);
+      const a = parseFloat(t.forecastPlan[k]);
+      if(o !== null && a > 0) acc[o] = (acc[o] || 0) + a;
+    });
+    return planFromOrdinalAmounts(acc);
+  }
+  return tenderEvenPlan(t);
+}
+function tenderEvenPlanMap(t){
+  const m = {};
+  tenderEvenPlan(t).forEach(p => { m[p.year + '-' + p.mk] = p.amount; });
+  return m;
+}
+function ensureTenderBreakdown(t){
+  if(!t.probBand) return;
+  if(!t.forecastStart) t.forecastStart = defaultTenderForecastStart(t);
+  const start = parseMonthKey(t.forecastStart);
+  if(t.jobType === 'Residential'){
+    if(!t.stages) t.stages = Object.assign({}, DEFAULT_STAGES);
+    if(!t.forecastStageMonths) t.forecastStageMonths = {};
+    STAGE_DEFS.forEach((d, i) => {
+      if(!t.forecastStageMonths[d.key] && start !== null) t.forecastStageMonths[d.key] = monthKeyFromOrdinal(start + i);
+    });
+  } else if(t.jobType === 'Commercial'){
+    if(!t.forecastPlan || !Object.keys(t.forecastPlan).length) t.forecastPlan = tenderEvenPlanMap(t);
+  }
+}
+function tenderForecastTag(t){
+  const plan = tenderSpreadPlan(t);
+  if(!plan.length) return '';
+  const lbl = p => fmtMonthKey(p.year + '-' + p.mk);
+  const kind = t.jobType === 'Residential' ? 'stage claims' : (t.jobType === 'Commercial' ? 'monthly claims' : 'even spread');
+  return 'Forecast: ' + tenderForecastBand(t).split(' (')[0] + ' · ' + kind + ' · ' + lbl(plan[0]) + (plan.length > 1 ? ' → ' + lbl(plan[plan.length - 1]) : '');
 }
 function tenderCountsInForecast(t){
   return t.status === 'Submitted' && !t.convertedJobId && !!tenderForecastBand(t) && tenderSpreadPlan(t).length > 0;
@@ -5082,6 +5197,7 @@ const TENDER_FIELDS = [
   {key:'probBand', label:'Forecast Band (counts while Submitted)', type:'select', options:['','Confirmed (>90%)','Possible (50-89%)','Unlikely (<50%)']},
   {key:'forecastStart', label:'Expected Start Month', type:'select', options: () => [{value:'', label:'— none —'}].concat(STAGE_MONTH_OPTIONS)},
   {key:'forecastMonths', label:'Spread Over (months)', type:'number', step:'1'},
+  {key:'jobType', label:'Job Type (residential = stage claims, commercial = monthly claims)', type:'select', options:['','Residential','Commercial']},
 ];
 const JOB_FIELDS = [
   {key:'jobName', label:'Job', type:'text', required:true},
@@ -5213,9 +5329,9 @@ function maybeConvertWonTenderToJob(t, priorStatus){
     contractValue: t.tenderSum || 0,
     probBand: 'Confirmed (>90%)',
     fy26Total: null,
-    jobType: null,
-    stages: {},
-    stageAmounts: {},
+    jobType: t.jobType || null,
+    stages: Object.assign({}, DEFAULT_STAGES, t.stages || {}),
+    stageAmounts: Object.assign({}, t.stageAmounts || {}),
   };
   tenderSpreadPlan(t).forEach(p => {
     if(FORECAST_YEARS.indexOf(p.year) >= 0) job[commercialFieldFor(p.year, p.mk)] = p.amount;
@@ -5277,6 +5393,31 @@ document.getElementById('tenderBody').addEventListener('click', e => {
     renderTenderTable();
     return;
   }
+  const planDel = e.target.closest('.fc-plan-del');
+  if(planDel){
+    const t = tenders.find(x => x.id === planDel.dataset.id);
+    if(t && t.forecastPlan){ delete t.forecastPlan[planDel.dataset.key]; saveState(); renderAll(); }
+    return;
+  }
+  const planAdd = e.target.closest('.fc-plan-add');
+  if(planAdd){
+    const t = tenders.find(x => x.id === planAdd.dataset.id);
+    if(t){
+      if(!t.forecastPlan) t.forecastPlan = {};
+      const used = Object.keys(t.forecastPlan).map(parseMonthKey).filter(o => o !== null);
+      const placed = Object.values(t.forecastPlan).reduce((s,v) => s + (parseFloat(v) || 0), 0);
+      const nextOrd = used.length ? Math.max.apply(null, used) + 1 : (parseMonthKey(t.forecastStart) ?? parseMonthKey(defaultTenderForecastStart(t)));
+      t.forecastPlan[monthKeyFromOrdinal(nextOrd)] = Math.max(0, Math.round(((t.tenderSum || 0) - placed) * 100) / 100);
+      saveState(); renderAll();
+    }
+    return;
+  }
+  const planSpread = e.target.closest('.fc-plan-spread');
+  if(planSpread){
+    const t = tenders.find(x => x.id === planSpread.dataset.id);
+    if(t){ t.forecastPlan = tenderEvenPlanMap(t); saveState(); renderAll(); }
+    return;
+  }
   const addRemarkBtn = e.target.closest('.add-remark-btn');
   if(addRemarkBtn){
     const input = addRemarkBtn.parentElement.querySelector('.new-remark-input');
@@ -5300,12 +5441,75 @@ document.getElementById('tenderBody').addEventListener('change', e => {
     const t = tenders.find(x => x.id === e.target.dataset.id);
     if(t){
       t.probBand = e.target.value || null;
-      if(t.probBand && !t.forecastStart) t.forecastStart = defaultTenderForecastStart(t);
+      ensureTenderBreakdown(t);
+      saveState(); renderAll();
+    }
+  } else if(e.target.classList.contains('followup-jobtype')){
+    const t = tenders.find(x => x.id === e.target.dataset.id);
+    if(t){ t.jobType = e.target.value || null; ensureTenderBreakdown(t); saveState(); renderAll(); }
+  } else if(e.target.classList.contains('fc-stage-pct')){
+    const t = tenders.find(x => x.id === e.target.dataset.id);
+    if(t){
+      if(!t.stages) t.stages = Object.assign({}, DEFAULT_STAGES);
+      t.stages[e.target.dataset.stage] = Math.max(0, parseFloat(e.target.value) || 0);
+      saveState(); renderAll();
+    }
+  } else if(e.target.classList.contains('fc-stage-amt')){
+    const t = tenders.find(x => x.id === e.target.dataset.id);
+    if(t){
+      if(!t.stageAmounts) t.stageAmounts = {};
+      const v = parseFloat(e.target.value);
+      if(e.target.value === '' || isNaN(v)) delete t.stageAmounts[e.target.dataset.stage]; else t.stageAmounts[e.target.dataset.stage] = Math.max(0, v);
+      saveState(); renderAll();
+    }
+  } else if(e.target.classList.contains('fc-stage-month')){
+    const t = tenders.find(x => x.id === e.target.dataset.id);
+    if(t){
+      if(!t.forecastStageMonths) t.forecastStageMonths = {};
+      t.forecastStageMonths[e.target.dataset.stage] = e.target.value || null;
+      saveState(); renderAll();
+    }
+  } else if(e.target.classList.contains('fc-plan-month')){
+    const t = tenders.find(x => x.id === e.target.dataset.id);
+    if(t && t.forecastPlan){
+      const oldKey = e.target.dataset.key, newKey = e.target.value;
+      if(newKey && newKey !== oldKey){
+        t.forecastPlan[newKey] = (parseFloat(t.forecastPlan[newKey]) || 0) + (parseFloat(t.forecastPlan[oldKey]) || 0);
+        delete t.forecastPlan[oldKey];
+      }
+      saveState(); renderAll();
+    }
+  } else if(e.target.classList.contains('fc-plan-amt')){
+    const t = tenders.find(x => x.id === e.target.dataset.id);
+    if(t && t.forecastPlan){
+      t.forecastPlan[e.target.dataset.key] = Math.max(0, parseFloat(e.target.value) || 0);
       saveState(); renderAll();
     }
   } else if(e.target.classList.contains('followup-start')){
     const t = tenders.find(x => x.id === e.target.dataset.id);
-    if(t){ t.forecastStart = e.target.value || null; saveState(); renderAll(); }
+    if(t){
+      const oldO = parseMonthKey(t.forecastStart), newO = parseMonthKey(e.target.value);
+      t.forecastStart = e.target.value || null;
+      if(oldO !== null && newO !== null && newO !== oldO){
+        const delta = newO - oldO;
+        if(t.forecastStageMonths){
+          Object.keys(t.forecastStageMonths).forEach(k => {
+            const o = parseMonthKey(t.forecastStageMonths[k]);
+            if(o !== null) t.forecastStageMonths[k] = monthKeyFromOrdinal(o + delta);
+          });
+        }
+        if(t.forecastPlan){
+          const shifted = {};
+          Object.keys(t.forecastPlan).forEach(k => {
+            const o = parseMonthKey(k);
+            if(o !== null) shifted[monthKeyFromOrdinal(o + delta)] = t.forecastPlan[k];
+          });
+          t.forecastPlan = shifted;
+        }
+      }
+      ensureTenderBreakdown(t);
+      saveState(); renderAll();
+    }
   } else if(e.target.classList.contains('followup-spread')){
     const t = tenders.find(x => x.id === e.target.dataset.id);
     if(t){
@@ -5483,9 +5687,6 @@ document.getElementById('entryForm').addEventListener('submit', e => {
       if(val !== null && !isNaN(val)) record.stageAmounts[d.key] = val;
     });
   }
-  if(type === 'tender' && record.probBand && !record.forecastStart){
-    record.forecastStart = defaultTenderForecastStart(record);
-  }
   const list = type === 'tender' ? tenders : jobs;
   let priorStatus = null;
   if(id){
@@ -5497,7 +5698,9 @@ document.getElementById('entryForm').addEventListener('submit', e => {
     list.push(record);
   }
   if(type === 'tender'){
-    maybeConvertWonTenderToJob(list.find(r => r.id === (id || record.id)), priorStatus);
+    const savedTender = list.find(r => r.id === (id || record.id));
+    ensureTenderBreakdown(savedTender);
+    maybeConvertWonTenderToJob(savedTender, priorStatus);
   }
   saveState();
   renderAll();
@@ -5834,7 +6037,7 @@ function buildYearForecastSheet(year){
       amts.forEach((a,i) => { bandMonthTotals[i] += a; });
       bandTotal += fy;
       rows.push([
-        '', '[Submitted tender] ' + (t.jobName||''), t.builder||'', '', t.probBand||'', t.tenderSum||0,
+        '', '[Submitted tender] ' + (t.jobName||''), t.builder||'', t.jobType||'', t.probBand||'', t.tenderSum||0,
       ].concat(amts.map(a => ({v: Math.round(a*100)/100, s: a > 0 ? XLSX_STYLE.YELLOW : XLSX_STYLE.DEFAULT}))).concat([fy]));
     });
     bandMonthTotals.forEach((t,i) => { monthTotals[i] += t; });
